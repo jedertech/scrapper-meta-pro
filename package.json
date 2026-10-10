@@ -1,0 +1,11 @@
+{
+  "name": "meta-ads-library-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {"meta-scraper": "./dist/cli.js"},
+  "engines": {"node": ">=22.13"},
+  "scripts": {"build": "tsc", "test": "npm run build && node tests/core.test.mjs && node tests/http-scenarios.test.mjs && node tests/stabilization.test.mjs && node tests/browser-profiles.test.mjs && node tests/browser-health.test.mjs && node tests/progress-wait.test.mjs", "test:browser-local": "npm run build && node tests/browser-local.test.mjs", "benchmark:local": "npm run build && node tests/benchmark-local.mjs 5000", "benchmark:parser": "npm run build && node tests/benchmark-parser.mjs 5000", "start": "node dist/cli.js", "cli": "node dist/cli.js"},
+  "dependencies": {"playwright": "1.61.1"},
+  "devDependencies": {"typescript": "5.9.3", "@types/node": "24.13.5"}
+}

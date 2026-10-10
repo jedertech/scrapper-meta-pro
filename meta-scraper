@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export PLAYWRIGHT_BROWSERS_PATH="$script_dir/.playwright-browsers"
+exec node --disable-warning=ExperimentalWarning "$script_dir/dist/cli.js" "$@"
