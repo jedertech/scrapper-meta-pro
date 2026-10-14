@@ -105,6 +105,13 @@ export interface ExtractorOptions {
   paginationWaitMs?: number;
   stalledWaitMs?: number;
   profileDir?: string;
+  // Dedup backing outside of RAM. When provided, the extractor asks SQLite
+  // which of the observed IDs are already known and drops them from its
+  // in-memory accumulators (pending/seen/receivedIds) after each batch, so
+  // long scrapes do not grow without bound. The callback returns the IDs that
+  // are NOT yet known. When omitted, the extractor falls back to its own
+  // in-memory Set (offline tests, diagnostics).
+  filterNewAds?: (ids: string[]) => string[];
   // Injection point for offline response-sequence tests; production uses Playwright.
   browserTypes?: Record<'chromium' | 'firefox' | 'webkit', BrowserType>;
 }
@@ -188,11 +195,9 @@ export class PlaywrightExtractor implements Extractor {
       const parsed = parseJsonAds(body);
       if (kind === 'graphql') {
         const hasErrors = /"errors"\s*:\s*\[\s*\{/u.test(body);
-        const newIds=parsed.ads.filter(raw=>{
-          const id=String((raw as Record<string,unknown>).id??'');
-          return id && !seen.has(id) && !receivedIds.has(id);
-        });
-        for(const raw of newIds) receivedIds.add(String((raw as Record<string,unknown>).id));
+        const parsedIds=[...new Set(parsed.ads.map(raw=>String((raw as Record<string,unknown>).id??'')))].filter(id=>!receivedIds.has(id));
+        const newIds=unknownIds(parsedIds);
+        for (const id of newIds) receivedIds.add(id);
         const consecutiveErrors = graphqlHealth.observe(operation,hasErrors,newIds.length);
         const errorDetail = hasErrors ? graphqlErrorDetail(body) : '';
         event('json',kind,responseUrl,resourceType,status,
@@ -210,6 +215,36 @@ export class PlaywrightExtractor implements Extractor {
       if (parsed.ads.length) event('json',kind,responseUrl,resourceType,null,`ads_parsed:${parsed.ads.length}`);
     };
     const receivedIds = new Set<string>();
+    // Dedup backing outside of RAM. `seen` keeps the original meaning: IDs
+    // already reported as a batch. When a SQLite callback is provided, IDs
+    // confirmed in the database no longer need a place in RAM: `flushMemory`
+    // drops them after each delivered batch and `unknownIds` consults SQLite
+    // before counting an ID as new, so dedup stays correct with an empty Set.
+    const unknownIds = (ids: string[]): string[] => {
+      const candidates = ids.filter(id => id && !seen.has(id));
+      if (!candidates.length) return [];
+      return this.options.filterNewAds ? this.options.filterNewAds(candidates) : candidates;
+    };
+    // Records IDs reported as a batch. Without a SQLite callback, `seen` is
+    // the only dedup record and every reported ID must remain in it.
+    const markReported = (ids: string[]): void => {
+      for (const id of ids) seen.add(id);
+    };
+    const freshAds = (ads: Array<Record<string,unknown>>): Array<Record<string,unknown>> => {
+      const fresh = ads.filter(x => unknownIds([String(x.id ?? '')]).length>0);
+      markReported(fresh.map(x => String(x.id ?? '')));
+      return fresh;
+    };
+    // Frees the accumulator arrays once their ads are guaranteed to be in
+    // SQLite: the runner persists every batch before consuming the next one.
+    const flushMemory = (): void => {
+      if (this.options.filterNewAds && seen.size) {
+        const stillUnknown = new Set(this.options.filterNewAds([...seen]));
+        for (const id of seen) if (!stillUnknown.has(id)) seen.delete(id);
+      }
+      pending.length = 0;
+      receivedIds.clear();
+    };
     const failIfGraphqlRestricted = () => {
       if (!graphqlFailure) return;
       const hit = graphqlFailure as {status:number;url:string};
@@ -357,7 +392,7 @@ export class PlaywrightExtractor implements Extractor {
             `progress_wait_elapsed:${Math.floor(elapsed/1000)};remaining:${Math.max(0,Math.ceil((limitMs-elapsed)/1000))}`),
           check:async()=>{
             failIfGraphqlRestricted();
-            if(pending.some(raw=>raw&&typeof raw==='object'&& !seen.has(String((raw as Record<string,unknown>).id??'')))) return 'new_ads';
+            if(unknownIds([...new Set(pending.map(raw=>String((raw as Record<string,unknown>).id??'')))]).length) return 'new_ads';
             const visibleIds=await page.evaluate(() => {
               const ids:string[]=[];
               for(const el of document.querySelectorAll('span')) {
@@ -366,7 +401,7 @@ export class PlaywrightExtractor implements Extractor {
               }
               return ids;
             });
-            if(visibleIds.some(id=>!seen.has(id))) return 'new_ads';
+            if(unknownIds([...new Set(visibleIds)]).length) return 'new_ads';
             if(watchControl) {
               const snapshot=await paginationSnapshot();
               if(selectMoreButton(snapshot)!==null) return 'more_button';
@@ -382,9 +417,8 @@ export class PlaywrightExtractor implements Extractor {
       for (let i=0; (this.options.persistentSession || i<this.maxScrolls) && !signal.aborted; i++) {
         if (this.paused) {
           if(graphqlPausePending) {
-            const tail=pending.splice(0).filter((x):x is Record<string,unknown>=>Boolean(x&&typeof x==='object'))
-              .filter(x=>{const id=String(x.id??'');if(!id||seen.has(id))return false;seen.add(id);return true;});
-            if(tail.length) {adsDetected+=tail.length;yield {ads:tail,cursor:null,exhausted:false};}
+            const tail=freshAds(pending.splice(0).filter((x):x is Record<string,unknown>=>Boolean(x&&typeof x==='object')));
+            if(tail.length) {adsDetected+=tail.length;yield {ads:tail,cursor:null,exhausted:false};flushMemory();}
             outcome='graphql_payload_error';
             yield {ads:[],cursor:null,exhausted:false,outcome:'GRAPHQL_ERROR',stopReason:`${graphqlHealth.pauseAfter} errores consecutivos de paginación GraphQL sin IDs nuevos`};
             if(!this.options.persistentSession) return;
@@ -431,7 +465,7 @@ export class PlaywrightExtractor implements Extractor {
         catch (e) { event('dom','document',finalUrl,'document',response.status(),`cards_${errorKind(e)}`); throw e; }
         const extracted=cards.map(parseVisibleCard).filter((x): x is Record<string,unknown> => x!==null);
         const merged=[...pending.splice(0),...extracted] as Array<Record<string,unknown>>;
-        const fresh = merged.filter(x => { const id=String(x.id ?? ''); if (!id || seen.has(id)) return false; seen.add(id); return true; });
+        const fresh = freshAds(merged);
         adsDetected += fresh.length;
         if (fresh.length) outcome = 'ads_observed';
         if (fresh.length) graphqlHealth.progress();
@@ -449,7 +483,7 @@ export class PlaywrightExtractor implements Extractor {
               `memory_prune_${errorKind(e)}`);
           }
         }
-        if (fresh.length) { stable=0; yield { ads:fresh, cursor:null, exhausted:false }; } else stable++;
+        if (fresh.length) { stable=0; yield { ads:fresh, cursor:null, exhausted:false }; flushMemory(); } else stable++;
         failIfGraphqlRestricted();
         if (graphqlHealth.shouldPause) {
           outcome='graphql_payload_error';
@@ -542,11 +576,10 @@ export class PlaywrightExtractor implements Extractor {
       }
       if (this.options.paginationDiagnostic) await sleep(this.options.diagnosticSettleMs ?? 2500);
       if (inflight.size) await Promise.race([Promise.allSettled([...inflight]),sleep(2500)]);
-      const tail = pending.splice(0).filter((x): x is Record<string,unknown> => Boolean(x && typeof x === 'object'))
-        .filter(x => { const id=String(x.id ?? ''); if (!id || seen.has(id)) return false; seen.add(id); return true; });
+      const tail = freshAds(pending.splice(0).filter((x): x is Record<string,unknown> => Boolean(x && typeof x === 'object')));
       adsDetected += tail.length;
       if (tail.length) outcome = 'ads_observed';
-      if (tail.length) yield { ads:tail, cursor:null, exhausted:false };
+      if (tail.length) { yield { ads:tail, cursor:null, exhausted:false }; flushMemory(); }
       if (!adsDetected) event('dom','document',finalUrl,'document',response.status(),'dom_no_results');
       failIfGraphqlRestricted();
       if (this.options.paginationDiagnostic) { outcome='diagnostic_limit_reached'; return; }
@@ -555,8 +588,7 @@ export class PlaywrightExtractor implements Extractor {
     } catch (e) {
       if (errorKind(e)==='page_closed') {
         outcome='page_closed';
-        const tail=pending.splice(0).filter((x):x is Record<string,unknown>=>Boolean(x&&typeof x==='object'))
-          .filter(x=>{const id=String(x.id??'');if(!id||seen.has(id))return false;seen.add(id);return true;});
+        const tail=freshAds(pending.splice(0).filter((x):x is Record<string,unknown>=>Boolean(x&&typeof x==='object')));
         if(tail.length) yield {ads:tail,cursor:null,exhausted:false};
         yield {ads:[],cursor:null,exhausted:false,outcome:'STALLED',stopReason:'La pestaña se cerró durante la carga; datos anteriores conservados'};
         return;

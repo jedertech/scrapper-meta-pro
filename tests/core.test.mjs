@@ -377,3 +377,45 @@ test('sesión pausada conserva lote y bloqueo exclusivo de propietario',async()=
     await iterator.return();
   }finally{s.close();}
 });
+test('Storage.hasAd y filterNewAds consultan la dedup por SQLite',()=>{
+  const s=make();try{
+    s.createBase('a');const j=s.createJob('a',url,'ads','playwright','chromium',10);
+    s.persistBatch(j.id,[normalize(ad('100'),'playwright','AR'),normalize(ad('101'),'playwright','AR')],null);
+    assert.equal(s.hasAd('100'),true);
+    assert.equal(s.hasAd('999'),false);
+    // Mixed known/new ids: only the unknown ones survive.
+    assert.deepEqual(s.filterNewAds(['100','102','103','102']),['102','103']);
+    assert.deepEqual(s.filterNewAds([]),[]);
+    assert.deepEqual(s.filterNewAds(['100']),[]);
+  }finally{s.close();}
+});
+test('runner persiste lotes en trozos de 100 y no pierde anuncios',async()=>{
+  const s=make();try{
+    s.createBase('a');
+    const j=s.createJob('a',url,'ads','playwright','chromium',250);
+    const sizes=[100,80,90]; // total 270 > objetivo; se completa al confirmar el tercero
+    async function* source(){
+      for(const size of sizes) yield {ads:Array.from({length:size},(_,k)=>ad(String(size*1000+k))),cursor:null,exhausted:false};
+    }
+    const diagnostics=[];
+    const result=await runJob(s,j.id,{method:'playwright',iterate:()=>source()},new AbortController().signal,undefined,
+      event=>{if(event.detail?.startsWith('[Storage] Flushed')) diagnostics.push(event.detail);});
+    assert.equal(result.status,'COMPLETED');
+    assert.equal(result.unique_ads,270); // el lote completo se confirma antes de evaluar el objetivo
+    assert.ok(diagnostics.length>=3); // trozos de 100, 80 y 90
+    assert.deepEqual(diagnostics.map(line=>Number(line.match(/Flushed (\d+) ads/)[1])),[100,80,90]);
+    assert.equal(s.stats('a').ads,270);
+    assert.equal(s.job(j.id).observed,270);
+  }finally{s.close();}
+});
+test('session runner confirma el lote pendiente tras una interrupción',async()=>{
+  const s=make();try{
+    s.createBase('nicho');const j=s.createJob('nicho',url,'ads','playwright','chromium',3);
+    const controller=new AbortController();
+    async function* source(){yield {ads:[ad('20001'),ad('20002')],cursor:null,exhausted:false};controller.abort();}
+    const result=await runSessionSlice(s,j.id,source(),controller.signal,()=>false);
+    assert.equal(result.job.status,'USER_STOPPED');
+    assert.equal(result.job.unique_ads,2);
+    assert.equal(s.stats('nicho').ads,2);
+  }finally{s.close();}
+});

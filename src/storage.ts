@@ -123,6 +123,16 @@ export class Storage {
   release(id: string, owner: string): void { this.db.prepare('DELETE FROM job_leases WHERE job_id=? AND owner=?').run(id,owner); }
   status(id: string, status: Status, reason: string | null): void { this.db.prepare("UPDATE jobs SET status=?, reason=?, updated_at=CURRENT_TIMESTAMP, finished_at=CASE WHEN ?='RUNNING' THEN NULL ELSE CURRENT_TIMESTAMP END WHERE id=?").run(status,reason,status,id); }
   addError(id: string, code: string, reason: string): void { this.db.prepare('INSERT INTO record_errors(job_id,code,reason) VALUES (?,?,?)').run(id,code,reason.slice(0,500)); }
+  // Dedup backing outside of RAM: lets callers drop in-memory accumulators
+  // (extractor Sets, runner buffers) once every confirmed ad is in SQLite.
+  hasAd(adId: string): boolean { return this.db.prepare('SELECT 1 FROM ads WHERE id=?').get(adId) !== undefined; }
+  filterNewAds(ids: string[]): string[] {
+    if (!ids.length) return [];
+    const unique=[...new Set(ids)];
+    const known=this.db.prepare(`SELECT id FROM ads WHERE id IN (${unique.map(()=>'?').join(',')})`);
+    const existing=new Set((known.all(...unique) as Array<Record<string,unknown>>).map(row=>String(row.id)));
+    return unique.filter(id=>!existing.has(id));
+  }
   persistBatch(id: string, ads: Ad[], cursor: string | null): Job {
     this.db.exec('BEGIN IMMEDIATE');
     try {

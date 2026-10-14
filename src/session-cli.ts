@@ -46,6 +46,7 @@ export async function startPersistentSession(storage:Storage,dataDir:string,base
   const makeExtractor=()=>new PlaywrightExtractor('chromium',scrollBudgetForTarget(target),{
     headless:false,persistentSession:true,onDiagnostic:recordDiagnostic,
     profileDir:profile?.path,
+    filterNewAds:ids=>storage.filterNewAds(ids),
     onPageClosed:()=>{if(closing||ended||intentionalBrowserClose) return;mainPageClosed=true;console.log('La pestaña principal se cerró. El trabajo permanece en SQLite; r reabrirá el perfil y la búsqueda.');}
   });
   let extractor=makeExtractor();
@@ -128,7 +129,8 @@ export async function startPersistentSession(storage:Storage,dataDir:string,base
       const started=performance.now();
       const result=await runSessionSlice(storage,job.id,iterator,controller.signal,()=>pauseRequested,
         updated=>{const stats=storage.stats(base) as {ads:number;advertisers:number};
-          writeProgress(progressLine(updated,stats.ads,stats.advertisers,(performance.now()-started)/1000,startingAds,startingObserved));});
+          writeProgress(progressLine(updated,stats.ads,stats.advertisers,(performance.now()-started)/1000,startingAds,startingObserved));},
+        recordDiagnostic);
       if(process.stdout.isTTY) process.stdout.write('\n');
       const path=exportJob(storage,job.id,join(dataDir,'exports'));
       lastExport=path;

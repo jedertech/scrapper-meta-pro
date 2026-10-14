@@ -9,6 +9,7 @@ import { validateSearchUrl, redact } from './security.js';
 import { PlaywrightExtractor, scrollBudgetForTarget, type ExtractorOptions } from './extractors.js';
 import { exitCodeForStatus, errorKind, safeDiagnosticUrl, type DiagnosticEvent } from './diagnostics.js';
 import { runJob } from './runner.js';
+import { runSessionSlice } from './session-runner.js';
 import { exportJob, exportBase } from './exporter.js';
 import { AccessError, type Mode } from './types.js';
 import { startPersistentSession } from './session-cli.js';
@@ -143,6 +144,10 @@ async function main(): Promise<void> {
   }
   const dataDir = resolve(opt('data-dir','data')!);
   const storage = new Storage(join(dataDir,'meta-scraper.sqlite'));
+  // Dedup backing outside of RAM: the extractor asks SQLite which of the
+  // observed IDs are already known and drops the rest from its in-memory
+  // accumulators, so long scrapes do not grow without bound.
+  const filterNewAds=(ids:string[])=>storage.filterNewAds(ids);
   try {
     if (args.includes('--method')) throw new Error('La opción --method fue retirada; la extracción usa Playwright');
     const [command,sub] = args;
@@ -169,7 +174,7 @@ async function main(): Promise<void> {
       const mode=opt('mode','ads') as Mode; if (!['ads','advertisers'].includes(mode)) throw new Error('Modo inválido');
       const base=opt('db',storage.defaultBase() ?? undefined); if (!base) throw new Error('Seleccione una base con db use o --db');
       const browser=opt('browser','chromium')!;
-      const selectedExtractor=extractor(browser,limit,{headless:!visible,onDiagnostic:logDiagnostic});
+      const selectedExtractor=extractor(browser,limit,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds});
       const job=storage.createJob(base,url,mode,'playwright',browser,limit);
       const startingAds=job.unique_ads;
       const startingObserved=job.observed;
@@ -178,7 +183,7 @@ async function main(): Promise<void> {
       const result=await runJob(storage,job.id,selectedExtractor,controller.signal,(updated,seconds)=>{
         const stats=storage.stats(base) as {ads:number;advertisers:number};
         writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
-      });
+      },logDiagnostic);
       if(process.stdout.isTTY) process.stdout.write('\n');
       const path=exportJob(storage,job.id,join(dataDir,'exports'));
       console.log(JSON.stringify({id:result.id,status:result.status,observed:result.observed,unique_ads:result.unique_ads,new_advertisers:result.new_advertisers,reason:result.reason,export:path},null,2));
