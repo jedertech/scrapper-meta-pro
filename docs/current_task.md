@@ -10,4 +10,4 @@
 
 **CRITICO**
 1. IDIOMA: SIEMPRE comunícate conmigo y escribe tus planes en tu salida de terminal en ESPAÑOL.
-2. LOCALIZACION: No puedes salir de la carpeta del proyecto.
+2. LOCALIZACION: No puedes salir de la carpeta del proyecto. 
