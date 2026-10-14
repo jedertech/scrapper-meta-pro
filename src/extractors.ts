@@ -5,7 +5,7 @@ import { redact, validateRedirect } from './security.js';
 import { parseVisibleCard, type VisibleCard } from './visible-card.js';
 import { browserContextOptions } from './browser-compat.js';
 import { errorKind, safeDiagnosticUrl, type DiagnosticEvent, type DiagnosticKind } from './diagnostics.js';
-import { inspectLoadedPage } from './dom-inspection.js';
+import { inspectLoadedPage, pruneVisibleCards } from './dom-inspection.js';
 import { selectMoreButton, type PaginationSnapshot } from './pagination.js';
 import { GraphqlHealth } from './graphql-health.js';
 import { waitForActivity } from './progress-wait.js';
@@ -437,6 +437,18 @@ export class PlaywrightExtractor implements Extractor {
         if (fresh.length) graphqlHealth.progress();
         event('dom','document',finalUrl,'document',response.status(),
           `cards_new:${cards.length};new_ads:${fresh.length};cycle:${i};load_ms:${Math.round(performance.now()-cycleStart)}`);
+        // DOM pruning: free browser memory for ads already delivered to Node.
+        // Wrapped in try/catch — a failure only warns, the scrape keeps going.
+        if (fresh.length) {
+          try {
+            const pruned = await pruneVisibleCards(page, fresh.map(x => String(x.id ?? '')));
+            event('dom','document',finalUrl,'document',response.status(),
+              `[Memory] Purged ${pruned.removed} ad nodes;failed:${pruned.failed.length}`);
+          } catch (e) {
+            event('dom','document',finalUrl,'document',response.status(),
+              `memory_prune_${errorKind(e)}`);
+          }
+        }
         if (fresh.length) { stable=0; yield { ads:fresh, cursor:null, exhausted:false }; } else stable++;
         failIfGraphqlRestricted();
         if (graphqlHealth.shouldPause) {

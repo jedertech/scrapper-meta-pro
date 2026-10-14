@@ -44,6 +44,8 @@ async function simulate(config) {
         if(config.clickTimeout) throw Object.assign(new Error('Timeout'),{name:'TimeoutError'});}})} :
       {innerText:async()=>{bodyReads++;if(page.closed) throw Object.assign(new Error('Target page closed'),{name:'TargetClosedError'});return config.body??'';}};},
     evaluate:async(fn)=>{
+      if(String(fn).includes('card.remove()'))
+        return {removed:0,failed:[]};
       if(String(fn).includes('ids.push')&&String(fn).includes("document.querySelectorAll('span')"))
         return config.watchIdsByCheck?.[watchReads++]??(config.cardsByCycle?.[Math.max(0,cycle-1)]??config.cards??[]).map(card=>card.id);
       if(/const controls\s*=/.test(String(fn))) return config.paginationSnapshotsByRead?.[snapshotReads++]??

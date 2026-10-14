@@ -13,6 +13,7 @@ import { runJob } from '../dist/runner.js';
 import { AccessError } from '../dist/types.js';
 import { collectAds, collectJsonAds, scrollBudgetForTarget, shouldCaptureResponse } from '../dist/extractors.js';
 import { parseVisibleCard } from '../dist/visible-card.js';
+import { pruneVisibleCards } from '../dist/dom-inspection.js';
 import { browserContextOptions } from '../dist/browser-compat.js';
 import { runSessionSlice } from '../dist/session-runner.js';
 import { acquireBrowserSessionLock } from '../dist/session-lock.js';
@@ -239,6 +240,22 @@ test('conflicto de identidad de anuncio no contamina la base',()=>{
     assert.equal(s.job(j.id).invalid,1);assert.equal(s.job(j.id).new_advertisers,1);
     assert.equal(s.errors(j.id).at(-1).code,'IDENTITY_CONFLICT');
   }finally{s.close();}
+});
+test('DOM pruning elimina tarjetas ya extraídas sin alterar scroll ni paginación',async()=>{
+  const page={evaluate:async(fn,arg)=>{
+    if(String(fn).includes('card.remove()')) return {removed:arg.length,failed:[]};
+    return [];
+  }};
+  assert.deepEqual(await pruneVisibleCards(page,[]),{removed:0,failed:[]});
+  const ids=['111','222','333'];
+  const result=await pruneVisibleCards(page,ids);
+  assert.equal(result.removed,3);assert.deepEqual(result.failed,[]);
+});
+test('DOM pruning es tolerante a fallos y solo avisa al scraper',async()=>{
+  const page={evaluate:async()=>{throw new Error('Target page closed');}};
+  let threw=false;
+  try { await pruneVisibleCards(page,['1']); } catch { threw=true; }
+  assert.ok(threw);
 });
 test('sin page_id mantiene identidades provisionales separadas y anuncios válidos para la base',()=>{
   const s=make();try {
