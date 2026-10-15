@@ -1,34 +1,31 @@
-# Guía para continuar el proyecto
+# ENTERPRISE AI AGENT PROTOCOL (META ADS SCRAPER)
 
-## Estado e invariantes
+Eres un Senior AI & Software Engineer desarrollando un scraper de nivel empresarial en TypeScript. Tu única fuente de verdad es este repositorio.
 
-- Stack: Node.js 22.13+, TypeScript, Playwright, `node:sqlite`, CSV. Fuente de verdad: `data/meta-scraper.sqlite`; los CSV son regenerables.
-- La entrega está limpia: `data/`, `profiles/`, dependencias y navegador local se crean al primer inicio. Los lanzadores instalan dependencias y Chromium local con confirmación.
-- No hacer solicitudes a Meta sin autorización específica. No usar perfiles personales, cookies copiadas, proxy, stealth ni bypass de controles. Respetar 403/429 y verificaciones.
-- `ad_id` deduplica por base. `meta_page_id` solo si existe y su fuente está documentada. La identidad interna provisional no es un ID de Meta. Nombres iguales no se fusionan.
-- El objetivo de un tramo son anuncios únicos nuevos para la base. Persistir cada lote antes de reportar progreso. Un trabajo terminado o parcial siempre puede exportarse desde SQLite.
-- En `session --mode advertisers`, el objetivo cuenta únicamente anunciantes nuevos con `meta_page_id_source='structured_json'`. Los anuncios sin ese ID conservan identidad provisional separada y no suman al objetivo. Al aparecer un ID estructurado, el anuncio se promueve en todas las bases donde exista.
-- Una sesión visible tiene un solo propietario, pestaña y contexto. `Ctrl+C`/`p` pausan sin cerrar; `r` continúa el objetivo restante del mismo trabajo; `+N` crea un trabajo adicional y conserva pendientes anteriores. `resume --job` abre navegador nuevo y no recupera el cursor visual exacto.
-- El perfil principal está en `profiles/main/` y usa `launchPersistentContext` con `handleSIGINT:false`. `--profile temp` crea un perfil descartable; `profile open` abre en blanco; `profile reset` elimina solo el perfil elegido con frase exacta y bloqueo de sesión. No inspeccionar ni copiar el contenido de los perfiles. `profiles/` no se versiona; SQLite permanece en `data/`.
-- El menú envía una extracción visible nueva al comando `session` y cede por completo stdin al proceso de sesión. `COMPLETED`, `GRAPHQL_ERROR`, `USER_PAUSED`, `STALLED`, `ACCESS_DENIED` y `RATE_LIMITED` finalizan el tramo, no el proceso de sesión. Cerrar la pestaña principal conserva el trabajo; `r` reabre perfil y búsqueda desde el inicio. `q` cierra voluntariamente. Si se vuelve al menú, ya no existe sesión viva en ese proceso: «Continuar sesión» lista trabajos históricos y abre navegador nuevo.
-- GraphQL HTTP 200 puede contener errores y cero anuncios. Contar errores de paginación consecutivos sin IDs nuevos: advertir al tercero y pausar al quinto (umbral interno configurable). Solo IDs nuevos verificados reinician la racha. Al pausar, ignorar respuestas tardías para salud y extracción; la recarga manual no reactiva el iterador. No reintentar automáticamente 403/429. `EXHAUSTED` solo con evidencia de fin.
-- La espera por ausencia de progreso es de hasta 60 segundos, con aviso a los 30. Monitorea IDs y «Ver más» de la página cargada; sale de inmediato ante progreso, `Ctrl+C`/`p`, 403/429 o error GraphQL. No repetir clic en «Ver más» hasta recibir IDs nuevos. No simular conducta humana ni garantizar evitar restricciones.
-- En sesión persistente no aplicar el presupuesto de scroll estimado a partir del objetivo, porque una búsqueda reanudada puede requerir recorrer miles de duplicados. Un clic en «Ver más» puede tardar más de tres segundos con DOM grande; se dan hasta diez y, si vence, se observan IDs durante la espera acotada antes de pausar. Vigilar memoria de Chromium en sesiones largas: se observó un renderer de varios GB con más de 2.000 tarjetas. No hay límite automático fiable de memoria.
-- `destination_kind` clasifica la URL observada sin visitar destino ni resolver seguimiento. No agregar filtros comerciales, contactos, landing scraping ni Twenty CRM al recolector.
+## 1. CONTEXTO OBLIGATORIO
+Antes de proponer o escribir cualquier línea de código, DEBES leer:
+1. `docs/current_task.md` (La tarea exacta en curso. NO LA EDITES. Es de solo lectura para ti).
+2. `docs/ARCHITECTURE.md` (Para conocer los patrones de diseño del proyecto).
 
-## Mapa del código
+## 2. REGLAS DE ENTORNO (CRÍTICO - WSL/LINUX)
+* **Sistema Operativo:** Estás trabajando en Ubuntu (WSL). Tienes PROHIBIDO usar PowerShell, CMD o ejecutar scripts `.bat`/`.cmd`. Usa exclusivamente comandos de `bash`.
+* **Idioma:** Aunque proceses en otro idioma internamente, SIEMPRE comunícate y documenta en ESPAÑOL.
+* **Localización:** NO salgas de la carpeta del proyecto bajo ninguna circunstancia.
+* **Git Prohibido:** Tienes estrictamente prohibido ejecutar comandos `git add`, `git commit` o `git push`. El humano gestiona el repositorio manualmente. (Sí puedes usar `git log` o `git diff` para leer el historial).
 
-- `src/cli.ts`, `src/wizard.ts`, `src/session-cli.ts`: CLI, menú y comandos de sesión.
-- `src/extractors.ts`, `src/visible-card.ts`, `src/graphql-health.ts`, `src/browser-profiles.ts`, `src/browser-health.ts`: navegador, perfiles, salud, DOM/JSON y paginación.
-- `src/normalize.ts`, `src/destination.ts`: contrato de anuncio y clasificación local.
-- `src/storage.ts`, `src/runner.ts`, `src/session-runner.ts`: SQLite, deduplicación, trabajos y recuperación.
-- `src/exporter.ts`: CSV atómico; `src/security.ts`: validación y redacción.
-- `src/project-format.ts`: formateo limitado al proyecto con confirmación, bloqueo de sesión y protección de rutas simbólicas.
-- `jedertech.sh`, `jedertech.cmd`, `scripts/needs-build.mjs`: inicio portable, instalación local con confirmación y compilación solo cuando hace falta. Probar Windows en un entorno Windows antes de afirmar compatibilidad completa.
-- `tests/`: escenarios offline, red simulada, persistencia y regresiones.
+## 3. PRINCIPIOS DE ARQUITECTURA (SOLID Y ENTERPRISE)
+* **Single Responsibility:** Mantén la lógica de Playwright estrictamente separada de la lógica de negocio y de la persistencia (`src/storage.ts`).
+* **Open/Closed:** Extiende interfaces existentes, no modifiques clases base que ya funcionan.
+* **Logging Estructurado:** Prohibido usar `console.log()` crudo. Utiliza el sistema de logs existente (eventos de diagnóstico).
+* **Manejo de Errores Silencioso:** Captura excepciones de nodos individuales y haz skip sin romper el loop principal.
 
-## Desarrollo
-
-Ejecutar `npm run build`, `npm test`, `npm run test:browser-local` y `npm run benchmark:local` antes de cambiar el extractor. La prueba con Chromium usa solo `127.0.0.1` y puede requerir permisos locales para abrir sockets/procesos. La simulación de 5.000 anuncios mide solo parsing y SQLite locales, nunca Meta. Mantener pruebas de GraphQL, interrupción y exportación histórica. No añadir dependencias sin necesidad demostrada. No versionar `data/`, CSV, sesiones, perfiles, logs, diagnósticos ni secretos. El Git local no tiene remoto.
-
-La futura fase de filtros debe consultar SQLite mediante `Storage.baseAdRows()` o una consulta nueva y parametrizada; no debe depender de CSV ni abrir el navegador. Si requiere migración, probarla con copia SQLite y preservar el esquema anterior.
+## 4. FLUJO DE TRABAJO Y PRUEBAS (CRÍTICO)
+1. **Auditoría y Desarrollo:** Analiza el código e implementa la solución arquitectónica.
+2. **Pruebas Offline:** Escribe, actualiza y ejecuta los tests unitarios en la carpeta `tests/`. DEBEN pasar al 100% antes de avanzar. No ignores fallos de aserciones.
+3. **Prueba E2E en Vivo (Obligatoria):**
+   Antes de dar por terminada la tarea, DEBES probar el scraper contra Meta para evitar regresiones de memoria, detección de bot o DOM.
+   *Paso A:* Crea la base de datos `test-live` usando el CLI si el sistema lo requiere.
+   *Paso B:* Ejecuta en bash la prueba E2E:
+   `./meta-scraper session --url 'https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=remera&search_type=keyword_unordered&sort_data[direction]=desc&sort_data[mode]=total_impressions' --limit 50 --db test-live --visible`
+4. **Documentación Histórica:** Documenta la fase actual en `docs/phases_log.md`. Registra un resumen técnico de qué fallaba, qué cambios hiciste y cómo lo solucionaste.
+5. **Cierre:** Avisa en la terminal que terminaste y que el código está listo para que el usuario haga el commit manual.

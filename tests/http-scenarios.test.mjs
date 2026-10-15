@@ -19,6 +19,12 @@ function reply(status,{path=url,navigation=false,resourceType='fetch',body='',co
 async function simulate(config) {
   const diagnostics=[];
   let scrolls=0,closed=0,gotos=0,launchOptions,clicks=0,cycle=0,bodyReads=0,snapshotReads=0,watchReads=0;
+  let lastSnapshot=null;
+  const clickHandler=async()=>{clicks++;for(const row of Array.isArray(config.responseOnClick)?config.responseOnClick:[config.responseOnClick].filter(Boolean))
+        for(const fn of page.listeners.get('response')??[]) fn(row);
+      if(config.closeOnClick){page.closed=true;for(const fn of page.listeners.get('close')??[]) fn();}
+      if(config.clickTimeout) throw Object.assign(new Error('Timeout'),{name:'TimeoutError'});
+      if(config.clickError) throw new Error(config.clickError);};
   const page={
     closed:false,isClosed(){return this.closed;},
     listeners:new Map(),
@@ -38,18 +44,21 @@ async function simulate(config) {
       if(config.closeDuringPaginationWait && clicks>0) {this.closed=true;for(const f of this.listeners.get('close')??[]) f();throw Object.assign(new Error('Target page closed'),{name:'TargetClosedError'});}
       if(config.waitNewIdsTimeout && String(fn).includes('knownIds')) throw Object.assign(new Error('Timeout'),{name:'TimeoutError'});},
     locator(selector){return selector.startsWith('script') ? {evaluateAll:async()=>config.scripts??[]} :
-      selector.startsWith('button') ? {nth:()=>({click:async()=>{clicks++;for(const row of Array.isArray(config.responseOnClick)?config.responseOnClick:[config.responseOnClick].filter(Boolean))
-        for(const fn of page.listeners.get('response')??[]) fn(row);
-        if(config.closeOnClick){page.closed=true;for(const fn of page.listeners.get('close')??[]) fn();}
-        if(config.clickTimeout) throw Object.assign(new Error('Timeout'),{name:'TimeoutError'});}})} :
+      selector.startsWith('[data-msr-pagination') ? {count:async()=>config.markNotUnique?0:1,
+        first:()=>({click:clickHandler})} :
+      selector.startsWith('button') ? {nth:()=>({click:clickHandler})} :
       {innerText:async()=>{bodyReads++;if(page.closed) throw Object.assign(new Error('Target page closed'),{name:'TargetClosedError'});return config.body??'';}};},
     evaluate:async(fn)=>{
-      if(String(fn).includes('card.remove()'))
-        return {removed:0,failed:[]};
+      if(String(fn).includes('setAttribute')&&String(fn).includes('data-msr-pagination'))
+        return selectMoreButton(lastSnapshot??{buttons:[],endOfResults:false,noResultLabels:true});
+      if(String(fn).includes('data-msr-pagination')) return undefined; // clearPaginationMark
       if(String(fn).includes('ids.push')&&String(fn).includes("document.querySelectorAll('span')"))
         return config.watchIdsByCheck?.[watchReads++]??(config.cardsByCycle?.[Math.max(0,cycle-1)]??config.cards??[]).map(card=>card.id);
-      if(/const controls\s*=/.test(String(fn))) return config.paginationSnapshotsByRead?.[snapshotReads++]??
-        config.paginationSnapshots?.[Math.max(0,cycle-1)]??{buttons:[],endOfResults:false};
+      if(/const controls\s*=/.test(String(fn))) {
+        lastSnapshot=config.paginationSnapshotsByRead?.[snapshotReads++]??
+          config.paginationSnapshots?.[Math.max(0,cycle-1)]??{buttons:[],endOfResults:false};
+        return lastSnapshot;
+      }
       if([403,429].includes(config.main?.status()) &&
         ![...(config.responses??[]),...(config.delayedResponses??[])].some(r=>r.request().isNavigationRequest()&&r.ok()))
         return config.inspect??{url,title:'Error',cards:config.cards??[],accessCheckVisible:false};
@@ -62,7 +71,7 @@ async function simulate(config) {
     paginationDiagnostic:config.paginationDiagnostic??false,persistentSession:config.persistentSession??false,
     keepOpen:config.keepOpen??false,diagnosticSettleMs:config.settleMs??0,
     recoveryWaitMs:config.recoveryWaitMs??0,paginationWaitMs:config.paginationWaitMs??0,
-    stalledWaitMs:config.stalledWaitMs??0,
+    stalledWaitMs:config.stalledWaitMs??0,maxPaginationClicks:config.maxPaginationClicks,
     headless:config.headless,onDiagnostic:e=>diagnostics.push(e)});
   const batches=[];let error=null,closedWhilePaused=null,scrollsWhilePaused=null;
   try {
@@ -84,6 +93,7 @@ async function simulate(config) {
     } else for await (const batch of extractor.iterate(url,null,new AbortController().signal)) {
       batches.push(batch);
       if(config.stopOnOutcome && config.stopOnOutcome===batch.outcome) {closedWhilePaused=closed;scrollsWhilePaused=scrolls;break;}
+      if(config.maxBatches && batches.length>=config.maxBatches) break;
     }
   }
   catch(e) {error=e;}
@@ -390,4 +400,67 @@ test('pausa manual no hace scroll ni procesa GraphQL tardío; ventana solo cierr
   assert.ok(result.diagnostics.some(e=>e.detail==='late_or_paused_response_ignored'));
   assert.equal(result.diagnostics.some(e=>e.detail?.startsWith('graphql_warning:')),false);
   assert.equal(result.closed,2);
+});
+
+// ---- Fase 2.5: regresiones de paginación, poda y anti-detección ----
+
+test('Fase 2.5: snapshot sin etiquetas de resultados desactiva la paginación',async()=>{
+  assert.equal(selectMoreButton({buttons:[{index:0,text:'Ver más',visible:true,belowResults:true}],
+    endOfResults:false,noResultLabels:true}),null);
+  // Con ancla, el control real sigue detectándose.
+  assert.equal(selectMoreButton({buttons:[{index:0,text:'Ver más',visible:true,belowResults:true}],
+    endOfResults:false,noResultLabels:false}),0);
+});
+
+test('Fase 2.5: snapshot con anclas podadas (skeleton) conserva el botón real y rechaza tarjetas',async()=>{
+  const real={index:0,text:'Ver más',visible:true,belowResults:true};
+  const cardBtn={index:1,text:'Ver más',visible:true,belowResults:false};
+  assert.equal(selectMoreButton({buttons:[real,cardBtn],endOfResults:false,noResultLabels:false}),0);
+  // El botón de tarjeta (no debajo de resultados) nunca se selecciona.
+  assert.equal(selectMoreButton({buttons:[{...real,belowResults:false}],endOfResults:false,noResultLabels:false}),null);
+});
+
+test('Fase 2.5: fin de resultados sin control único produce EXHAUSTED sin clic',async()=>{
+  const main=main200();const result=await simulate({main,responses:[main],diagnosticOnly:false,maxScrolls:4,
+    cardsByCycle:[[card],[card]],paginationSnapshots:[{buttons:[],endOfResults:true},{buttons:[],endOfResults:true}]});
+  assert.equal(result.error,null);assert.equal(result.clicks,0);
+  assert.equal(result.batches.at(-1).exhausted,true);
+});
+
+test('Fase 2.5: sesión persistente aplica el techo de clics de paginación',async()=>{
+  const main=main200();const result=await simulate({main,responses:[main],diagnosticOnly:false,
+    persistentSession:true,maxScrolls:10,maxPaginationClicks:2,
+    cardsByCycle:[[card],[card],[card],[card],[card],[card]],
+    paginationSnapshots:[more,more,more,more,more,more],waitNewIdsTimeout:true,stopOnOutcome:'USER_PAUSED'});
+  assert.equal(result.error,null);
+  assert.equal(result.clicks,2);
+  assert.equal(result.batches.at(-1).outcome,'USER_PAUSED');
+  assert.ok(result.batches.some(b=>b.outcome==='STALLED'&&b.stopReason==='Límite de paginación alcanzado'));
+});
+
+test('Fase 2.5: fallo de clic no-timeout se agota tras 3 intentos sin bucle infinito',async()=>{
+  const main=main200();const result=await simulate({main,responses:[main],diagnosticOnly:false,
+    persistentSession:true,maxScrolls:10,maxPaginationClicks:50,clickError:'Internal error',
+    cardsByCycle:[[card],[card],[card],[card],[card]],
+    paginationSnapshots:[more,more,more,more,more],stopOnOutcome:'STALLED'});
+  assert.equal(result.error,null);
+  assert.equal(result.clicks,3);
+  assert.ok(result.diagnostics.some(e=>e.detail?.startsWith('pagination_click_failures')));
+  assert.match(result.batches.at(-1).stopReason,/fallos consecutivos/);
+});
+
+test('Fase 2.5: la foto de confirmación marca el control único y el clic va por atributo',async()=>{
+  const main=main200();const result=await simulate({main,responses:[main],diagnosticOnly:false,
+    paginationDiagnostic:true,maxScrolls:5,
+    cardsByCycle:[[card],[card],[card,another]],paginationSnapshots:[more,more]});
+  assert.equal(result.error,null);assert.equal(result.clicks,1);
+  assert.ok(result.diagnostics.some(e=>e.detail?.startsWith('pagination_clicked;')));
+});
+
+test('Fase 2.5: marcado no único aborta el clic en vez de pulsar un control equivocado',async()=>{
+  const main=main200();const result=await simulate({main,responses:[main],diagnosticOnly:false,
+    paginationDiagnostic:true,maxScrolls:5,markNotUnique:true,
+    cardsByCycle:[[card],[card],[card]],paginationSnapshots:[more,more]});
+  assert.equal(result.error,null);assert.equal(result.clicks,0);
+  assert.equal(result.batches.at(-1).outcome,'STALLED');
 });

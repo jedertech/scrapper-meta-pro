@@ -3,9 +3,9 @@ import type { ExtractBatch, Extractor } from './types.js';
 import { AccessError } from './types.js';
 import { redact, validateRedirect } from './security.js';
 import { parseVisibleCard, type VisibleCard } from './visible-card.js';
-import { browserContextOptions } from './browser-compat.js';
+import { stealthContextOptions, stealthInitScript, stealthLaunchOptions } from './browser-compat.js';
 import { errorKind, safeDiagnosticUrl, type DiagnosticEvent, type DiagnosticKind } from './diagnostics.js';
-import { inspectLoadedPage, pruneVisibleCards } from './dom-inspection.js';
+import { inspectLoadedPage, pruneVisibleCards, LABEL_PATTERN } from './dom-inspection.js';
 import { selectMoreButton, type PaginationSnapshot } from './pagination.js';
 import { GraphqlHealth } from './graphql-health.js';
 import { waitForActivity } from './progress-wait.js';
@@ -153,13 +153,16 @@ export class PlaywrightExtractor implements Extractor {
     if(this.options.profileDir) {
       if(this.browserName!=='chromium') throw new Error('Los perfiles propios requieren Chromium');
       context=await types.chromium.launchPersistentContext(this.options.profileDir,{
-        ...browserContextOptions,headless:this.options.headless??true,handleSIGINT:false});
+        ...stealthContextOptions(),...stealthLaunchOptions({headless:this.options.headless??true,handleSIGINT:false},this.browserName)});
     } else {
-      browser=await types[this.browserName].launch({headless:this.options.headless??true,
-        handleSIGINT:!this.options.persistentSession});
-      try {context=await browser.newContext(browserContextOptions);}
+      browser=await types[this.browserName].launch(stealthLaunchOptions({headless:this.options.headless??true,
+        handleSIGINT:!this.options.persistentSession},this.browserName));
+      try {context=await browser.newContext(stealthContextOptions());}
       catch(e) {await browser.close();throw e;}
     }
+    // Registered before the first navigation so it runs before any page script.
+    // Guarded because offline harnesses provide minimal fake contexts.
+    try { await context.addInitScript(stealthInitScript); } catch {/* fake context without init script */}
     let page:Page;
     try {page=context.pages()[0]??await context.newPage();}
     catch(e) {await context.close();await browser?.close();throw e;}
@@ -237,13 +240,22 @@ export class PlaywrightExtractor implements Extractor {
     };
     // Frees the accumulator arrays once their ads are guaranteed to be in
     // SQLite: the runner persists every batch before consuming the next one.
-    const flushMemory = (): void => {
+    // Returns the IDs that were removed from `seen` (already persisted), so the
+    // caller can prune their DOM nodes before the memory is cleared.
+    const flushMemory = (): string[] => {
+      const removedFromSeen: string[] = [];
       if (this.options.filterNewAds && seen.size) {
         const stillUnknown = new Set(this.options.filterNewAds([...seen]));
-        for (const id of seen) if (!stillUnknown.has(id)) seen.delete(id);
+        for (const id of seen) {
+          if (!stillUnknown.has(id)) {
+            seen.delete(id);
+            removedFromSeen.push(id);
+          }
+        }
       }
       pending.length = 0;
       receivedIds.clear();
+      return removedFromSeen;
     };
     const failIfGraphqlRestricted = () => {
       if (!graphqlFailure) return;
@@ -367,21 +379,81 @@ export class PlaywrightExtractor implements Extractor {
       let stable = 0;
       let paginationClicks = 0;
       let paginationWaiting = false;
+      let paginationClickFailures = 0;
+      // Set when a pagination ceiling is reached in a persistent session: the
+      // loop pauses for an explicit user resume (r) instead of silently
+      // restarting the counter, which was the Phase 2 infinite loop.
+      let paginationCeilingReached = false;
+      const MAX_PAGINATION_CLICK_FAILURES = 3;
+      // A finite click ceiling in every mode. The previous Number.MAX_SAFE_INTEGER
+      // let a misdetected control drive the loop forever.
       const maxPaginationClicks = this.options.paginationDiagnostic ? 1 :
-        Math.max(0,this.options.maxPaginationClicks ?? (this.options.persistentSession ? Number.MAX_SAFE_INTEGER : 25));
+        Math.max(0,this.options.maxPaginationClicks ?? 25);
       const paginationSnapshot = async ():Promise<PaginationSnapshot> => {
-        const result = await page.evaluate(() => {
-          const labels=[...document.querySelectorAll('span')].filter(el=>/^(Identificador de la biblioteca|Library ID):\s*\d{5,30}$/i.test(el.textContent?.trim()??''));
-          const lastBottom=labels.length ? Math.max(...labels.map(el=>el.getBoundingClientRect().bottom+window.scrollY)) : 0;
+        const result = await page.evaluate((pattern:string) => {
+          const labelRegex=new RegExp(pattern,'i');
+          // Live result labels plus pruned skeletons. Skeletons keep the result
+          // anchor valid after pruning removes the label spans.
+          const anchors=[...document.querySelectorAll('span')].filter(el=>labelRegex.test(el.textContent?.trim()??''))
+            .map(el=>el.getBoundingClientRect().bottom+window.scrollY);
+          for(const el of document.querySelectorAll('[data-msr-pruned]')) {
+            const rect=el.getBoundingClientRect();
+            if(rect.height>0) anchors.push(rect.bottom+window.scrollY);
+          }
+          const hasResults=anchors.length>0;
+          const lastBottom=hasResults ? Math.max(...anchors) : 0;
           const controls=[...document.querySelectorAll('button, [role="button"]')];
           const buttons=controls.map((el,index)=>({index,text:(el.textContent??'').trim(),
             visible:el.getBoundingClientRect().width>0&&el.getBoundingClientRect().height>0,
-            belowResults:el.getBoundingClientRect().top+window.scrollY>lastBottom+30}));
+            // Without a result anchor, belowResults is unknowable: report false
+            // for every button so no click can be planned from a corrupted photo.
+            belowResults:hasResults&&el.getBoundingClientRect().top+window.scrollY>lastBottom+30}));
           const tail=(document.body?.innerText??'').slice(-1200);
-          return {buttons,endOfResults:/no hay más resultados|no se encontraron más anuncios|no more results|end of results/i.test(tail)};
-        });
-        return result && !Array.isArray(result) && Array.isArray(result.buttons) ? result as PaginationSnapshot : {buttons:[],endOfResults:false};
+          return {buttons,endOfResults:/no hay más resultados|no se encontraron más anuncios|no more results|end of results/i.test(tail),
+            noResultLabels:!hasResults};
+        }, LABEL_PATTERN);
+        return result && !Array.isArray(result) && Array.isArray(result.buttons)
+          ? {buttons:result.buttons,endOfResults:Boolean(result.endOfResults),noResultLabels:Boolean(result.noResultLabels)}
+          : {buttons:[],endOfResults:false,noResultLabels:true};
       };
+      // Marks the single confirmed candidate inside the same evaluate that
+      // reads it, so the click targets an unambiguous handle instead of a
+      // global nth() index that a re-render or a prune could invalidate.
+      const markPaginationControl = async (candidate:PaginationSnapshot):Promise<number|null> => {
+        const chosen=selectMoreButton(candidate);
+        if(chosen===null) return null;
+        return await page.evaluate(([pattern,targetIndex]:[string,number]) => {
+          const labelRegex=new RegExp(pattern,'i');
+          const anchors=[...document.querySelectorAll('span')].filter(el=>labelRegex.test(el.textContent?.trim()??''))
+            .map(el=>el.getBoundingClientRect().bottom+window.scrollY);
+          for(const el of document.querySelectorAll('[data-msr-pruned]')) {
+            const rect=el.getBoundingClientRect();
+            if(rect.height>0) anchors.push(rect.bottom+window.scrollY);
+          }
+          const hasResults=anchors.length>0;
+          if(!hasResults) return null;
+          const lastBottom=Math.max(...anchors);
+          const controls=[...document.querySelectorAll('button, [role="button"]')];
+          const el=controls[targetIndex];
+          if(!el) return null;
+          const text=(el.textContent??'').trim();
+          const rect=el.getBoundingClientRect();
+          const eligible=rect.width>0&&rect.height>0&&
+            rect.top+window.scrollY>lastBottom+30&&
+            /^(ver más|ver mas|see more|load more|mostrar más|mostrar mas)$/i.test(text);
+          for(const stale of document.querySelectorAll('[data-msr-pagination]')) stale.removeAttribute('data-msr-pagination');
+          if(!eligible) return null;
+          const others=controls.filter((c,i)=>i!==targetIndex&&c.getBoundingClientRect().width>0&&c.getBoundingClientRect().height>0&&
+            c.getBoundingClientRect().top+window.scrollY>lastBottom+30&&
+            /^(ver más|ver mas|see more|load more|mostrar más|mostrar mas)$/i.test((c.textContent??'').trim()));
+          if(others.length) return null;
+          el.setAttribute('data-msr-pagination','1');
+          return targetIndex;
+        }, [LABEL_PATTERN, chosen] as [string, number]);
+      };
+      const clearPaginationMark = () => page.evaluate(() => {
+        for(const el of document.querySelectorAll('[data-msr-pagination]')) el.removeAttribute('data-msr-pagination');
+      }).catch(()=>{});
       const waitForPageActivity = async (watchControl:boolean,limitMs:number) => {
         const started=performance.now();
         event('wait','document',finalUrl,'document',response.status(),`progress_wait_started;max_seconds:${Math.ceil(limitMs/1000)}`);
@@ -393,14 +465,15 @@ export class PlaywrightExtractor implements Extractor {
           check:async()=>{
             failIfGraphqlRestricted();
             if(unknownIds([...new Set(pending.map(raw=>String((raw as Record<string,unknown>).id??'')))]).length) return 'new_ads';
-            const visibleIds=await page.evaluate(() => {
+            const visibleIds=await page.evaluate((pattern:string) => {
+              const labelRegex=new RegExp(pattern,'i');
               const ids:string[]=[];
               for(const el of document.querySelectorAll('span')) {
-                const match=el.textContent?.trim().match(/^(?:Identificador de la biblioteca|Library ID):\s*(\d{5,30})$/i);
+                const match=el.textContent?.trim().match(labelRegex);
                 if(match) ids.push(match[1]!);
               }
               return ids;
-            });
+            }, LABEL_PATTERN);
             if(unknownIds([...new Set(visibleIds)]).length) return 'new_ads';
             if(watchControl) {
               const snapshot=await paginationSnapshot();
@@ -418,12 +491,29 @@ export class PlaywrightExtractor implements Extractor {
         if (this.paused) {
           if(graphqlPausePending) {
             const tail=freshAds(pending.splice(0).filter((x):x is Record<string,unknown>=>Boolean(x&&typeof x==='object')));
-            if(tail.length) {adsDetected+=tail.length;yield {ads:tail,cursor:null,exhausted:false};flushMemory();}
+            if(tail.length) {adsDetected+=tail.length;yield {ads:tail,cursor:null,exhausted:false};}
+            // Prune DOM for IDs persisted before clearing memory.
+            const idsToPrune = flushMemory();
+            if (idsToPrune.length) {
+              try {
+                const pruned = await pruneVisibleCards(page, idsToPrune);
+                event('dom','document',finalUrl,'document',response.status(),
+                  `[Memory] Purged ${pruned.removed} ad nodes;failed:${pruned.failed.length}`);
+              } catch (e) {
+                event('dom','document',finalUrl,'document',response.status(),
+                  `memory_prune_${errorKind(e)}`);
+              }
+            }
             outcome='graphql_payload_error';
             yield {ads:[],cursor:null,exhausted:false,outcome:'GRAPHQL_ERROR',stopReason:`${graphqlHealth.pauseAfter} errores consecutivos de paginación GraphQL sin IDs nuevos`};
             if(!this.options.persistentSession) return;
             graphqlHealth.manualResume();graphqlPausePending=false;paginationWaiting=false;stable=0;
           } else {
+            // An explicit user pause is also the reset point for the pagination
+            // ceiling: resuming with r grants a fresh click budget.
+            if (paginationCeilingReached) {
+              paginationCeilingReached=false;paginationClicks=0;paginationClickFailures=0;paginationWaiting=false;stable=0;
+            }
             outcome='user_paused';
             yield {ads:[],cursor:null,exhausted:false,outcome:'USER_PAUSED'};
           }
@@ -444,24 +534,26 @@ export class PlaywrightExtractor implements Extractor {
           throw new AccessError(403,'Página de verificación o bloqueo');
         }
         let cards: VisibleCard[];
-        try { cards = await page.evaluate((knownIds: string[]) => {
+        try { cards = await page.evaluate(([pattern, knownIds]: [string, string[]]) => {
+          const labelRegex=new RegExp(pattern,'i');
           const out: VisibleCard[] = [];
           const known=new Set(knownIds);
-          const spans = [...document.querySelectorAll('span')].filter(e => /^Identificador de la biblioteca:\s*\d{5,30}$/.test(e.textContent?.trim() ?? ''));
+          const spans = [...document.querySelectorAll('span')].filter(e => labelRegex.test(e.textContent?.trim() ?? ''));
           for (const label of spans) {
-            const id = label.textContent!.match(/\d{5,30}/)![0];
-            if (known.has(id)) continue;
+            const id = label.textContent?.match(labelRegex)?.[1];
+            if (!id || known.has(id)) continue;
             let card: Element | null = label;
             while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2)) card=card.parentElement;
             if (!card) continue;
-            const ids=[...card.querySelectorAll('span')].filter(e => /^Identificador de la biblioteca:\s*\d{5,30}$/.test(e.textContent?.trim() ?? ''));
+            if (card.closest('[data-msr-pruned]')) continue;
+            const ids=[...card.querySelectorAll('span')].filter(e => labelRegex.test(e.textContent?.trim() ?? ''));
             if (ids.length !== 1) continue;
             const description=card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null;
             out.push({id,text:(card as HTMLElement).innerText ?? '',description,
               links:[...card.querySelectorAll('a[href]')].map(a=>({text:(a as HTMLElement).innerText ?? '',href:(a as HTMLAnchorElement).href}))});
           }
           return out;
-        }, [...seen]); }
+        }, [LABEL_PATTERN, [...seen]] as [string, string[]]); }
         catch (e) { event('dom','document',finalUrl,'document',response.status(),`cards_${errorKind(e)}`); throw e; }
         const extracted=cards.map(parseVisibleCard).filter((x): x is Record<string,unknown> => x!==null);
         const merged=[...pending.splice(0),...extracted] as Array<Record<string,unknown>>;
@@ -471,11 +563,14 @@ export class PlaywrightExtractor implements Extractor {
         if (fresh.length) graphqlHealth.progress();
         event('dom','document',finalUrl,'document',response.status(),
           `cards_new:${cards.length};new_ads:${fresh.length};cycle:${i};load_ms:${Math.round(performance.now()-cycleStart)}`);
-        // DOM pruning: free browser memory for ads already delivered to Node.
-        // Wrapped in try/catch — a failure only warns, the scrape keeps going.
-        if (fresh.length) {
+        if (fresh.length) { stable=0; yield { ads:fresh, cursor:null, exhausted:false }; }
+        // DOM pruning: free browser memory for ads already persisted to SQLite.
+        // Runs AFTER yield and BEFORE flushMemory clears `seen`, using the IDs
+        // that were just removed from `seen` (guaranteed to have DOM nodes).
+        const idsToPrune = flushMemory();
+        if (idsToPrune.length) {
           try {
-            const pruned = await pruneVisibleCards(page, fresh.map(x => String(x.id ?? '')));
+            const pruned = await pruneVisibleCards(page, idsToPrune);
             event('dom','document',finalUrl,'document',response.status(),
               `[Memory] Purged ${pruned.removed} ad nodes;failed:${pruned.failed.length}`);
           } catch (e) {
@@ -483,7 +578,7 @@ export class PlaywrightExtractor implements Extractor {
               `memory_prune_${errorKind(e)}`);
           }
         }
-        if (fresh.length) { stable=0; yield { ads:fresh, cursor:null, exhausted:false }; flushMemory(); } else stable++;
+        if (!fresh.length) stable++;
         failIfGraphqlRestricted();
         if (graphqlHealth.shouldPause) {
           outcome='graphql_payload_error';
@@ -526,31 +621,57 @@ export class PlaywrightExtractor implements Extractor {
             if (paginationClicks>=maxPaginationClicks) {
               outcome='pagination_click_limit';
               yield {ads:[],cursor:null,exhausted:false,outcome:'STALLED',stopReason:'Límite de paginación alcanzado'};
-              if (this.options.persistentSession) {paginationClicks=0;stable=0;continue;}
+              if (this.options.persistentSession) {
+                // Do NOT restart the counter: a wrong click here looped forever.
+                // Pause and wait for an explicit r, which resets the ceiling.
+                paginationCeilingReached=true;this.pause();continue;
+              }
               return;
             }
-            const confirmedIndex=selectMoreButton(await paginationSnapshot());
-            if(this.paused) {yield {ads:[],cursor:null,exhausted:false,outcome:'USER_PAUSED'};continue;}
+            const confirmedIndex=await markPaginationControl(await paginationSnapshot());
+            if(this.paused) {await clearPaginationMark();yield {ads:[],cursor:null,exhausted:false,outcome:'USER_PAUSED'};continue;}
             if(confirmedIndex===null) {
+              await clearPaginationMark();
               outcome='pagination_control_disappeared';
               yield {ads:[],cursor:null,exhausted:false,outcome:'STALLED',stopReason:'El control Ver más desapareció o dejó de ser único antes del clic'};
               return;
             }
             const started=performance.now();
-            try { await page.locator('button, [role="button"]').nth(confirmedIndex).click({timeout:10000}); }
+            const marked=page.locator('[data-msr-pagination="1"]');
+            try {
+              // Re-verify uniqueness right before the click: the mark is the
+              // only handle we trust, never a positional index.
+              if(await marked.count()!==1) throw new Error('El marcado de paginación dejó de ser único');
+              await marked.first().click({timeout:10000});
+            }
             catch(e) {
               const kind=errorKind(e);
               event('dom','document',finalUrl,'document',response.status(),`pagination_click_${kind}`);
-              if(kind!=='timeout') throw e;
-              // A re-render can detach the control while a valid pagination
-              // response is still in flight. Observe progress before pausing.
-              paginationWaiting=true;
+              await clearPaginationMark();
+              if(kind==='timeout') {
+                // A re-render can detach the control while a valid pagination
+                // response is still in flight. Observe progress before pausing.
+                paginationWaiting=true;
+                continue;
+              }
+              // Any other failure is a real defect: count it and stop retrying
+              // forever. Timeouts never reach here.
+              paginationClickFailures++;
+              if(paginationClickFailures>=MAX_PAGINATION_CLICK_FAILURES) {
+                outcome='pagination_click_failures';
+                yield {ads:[],cursor:null,exhausted:false,outcome:'STALLED',
+                  stopReason:`${paginationClickFailures} fallos consecutivos al pulsar el control Ver más`};
+                if (this.options.persistentSession) {paginationCeilingReached=true;this.pause();continue;}
+                return;
+              }
               continue;
             }
             paginationClicks++;
+            paginationClickFailures=0;
             paginationWaiting=true;
             event('dom','document',finalUrl,'document',response.status(),`pagination_control_clicked;control_index:${confirmedIndex}`);
             event('dom','document',finalUrl,'document',response.status(),`pagination_clicked;load_ms:${Math.round(performance.now()-started)}`);
+            void clearPaginationMark();
             continue;
           }
         }
@@ -565,13 +686,14 @@ export class PlaywrightExtractor implements Extractor {
         }
         if(this.paused) {yield {ads:[],cursor:null,exhausted:false,outcome:'USER_PAUSED'};continue;}
         await page.mouse.wheel(0,1600);
-        try { await page.waitForFunction((knownIds:string[]) => {
+        try { await page.waitForFunction(([pattern,knownIds]:[string,string[]]) => {
+          const labelRegex=new RegExp(pattern,'i');
           const known=new Set(knownIds);
           return [...document.querySelectorAll('span')].some(el=>{
-            const match=el.textContent?.trim().match(/^(?:Identificador de la biblioteca|Library ID):\s*(\d{5,30})$/i);
+            const match=el.textContent?.trim().match(labelRegex);
             return match && !known.has(match[1]!);
           });
-        }, [...seen], {timeout:4000}); }
+        }, [LABEL_PATTERN, [...seen]] as [string, string[]], {timeout:4000}); }
         catch(e) {const kind=errorKind(e);event('wait','document',finalUrl,'document',response.status(),`scroll_new_ids_${kind}`);if(kind!=='timeout') throw e;}
       }
       if (this.options.paginationDiagnostic) await sleep(this.options.diagnosticSettleMs ?? 2500);
@@ -579,7 +701,19 @@ export class PlaywrightExtractor implements Extractor {
       const tail = freshAds(pending.splice(0).filter((x): x is Record<string,unknown> => Boolean(x && typeof x === 'object')));
       adsDetected += tail.length;
       if (tail.length) outcome = 'ads_observed';
-      if (tail.length) { yield { ads:tail, cursor:null, exhausted:false }; flushMemory(); }
+      if (tail.length) { yield { ads:tail, cursor:null, exhausted:false }; }
+      // Prune DOM for IDs persisted before clearing memory.
+      const idsToPrune = flushMemory();
+      if (idsToPrune.length) {
+        try {
+          const pruned = await pruneVisibleCards(page, idsToPrune);
+          event('dom','document',finalUrl,'document',response.status(),
+            `[Memory] Purged ${pruned.removed} ad nodes;failed:${pruned.failed.length}`);
+        } catch (e) {
+          event('dom','document',finalUrl,'document',response.status(),
+            `memory_prune_${errorKind(e)}`);
+        }
+      }
       if (!adsDetected) event('dom','document',finalUrl,'document',response.status(),'dom_no_results');
       failIfGraphqlRestricted();
       if (this.options.paginationDiagnostic) { outcome='diagnostic_limit_reached'; return; }

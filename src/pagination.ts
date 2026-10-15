@@ -1,10 +1,18 @@
 export interface PaginationButton { index: number; text: string; visible: boolean; belowResults: boolean; }
-export interface PaginationSnapshot { buttons: PaginationButton[]; endOfResults: boolean; }
+export interface PaginationSnapshot {
+  buttons: PaginationButton[];
+  endOfResults: boolean;
+  // True when the page has no result label spans at all. Without an anchor
+  // there is no safe way to tell a real "Ver más" from an advertiser card button,
+  // so selectMoreButton() refuses to act.
+  noResultLabels: boolean;
+}
 
 export function selectMoreButton(snapshot: PaginationSnapshot): number | null {
-  const matches=snapshot.buttons.filter(button => button.visible && button.belowResults &&
+  if (snapshot.noResultLabels) return null;
+  const matches = snapshot.buttons.filter(button => button.visible && button.belowResults &&
     /^(ver más|ver mas|see more|load more|mostrar más|mostrar mas)$/i.test(button.text.trim()));
-  return matches.length===1 ? matches[0]!.index : null;
+  return matches.length === 1 ? matches[0]!.index : null;
 }
 
 export function stopReason(input: {newAds:number; moreButton:number|null; endOfResults:boolean;

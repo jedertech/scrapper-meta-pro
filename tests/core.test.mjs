@@ -241,9 +241,9 @@ test('conflicto de identidad de anuncio no contamina la base',()=>{
     assert.equal(s.errors(j.id).at(-1).code,'IDENTITY_CONFLICT');
   }finally{s.close();}
 });
-test('DOM pruning elimina tarjetas ya extraídas sin alterar scroll ni paginación',async()=>{
+test('DOM pruning poda a esqueleto sin eliminar el ancla de resultados',async()=>{
   const page={evaluate:async(fn,arg)=>{
-    if(String(fn).includes('card.remove()')) return {removed:arg.length,failed:[]};
+    if(String(fn).includes('data-msr-pruned')) return {removed:arg[1].length,failed:[]};
     return [];
   }};
   assert.deepEqual(await pruneVisibleCards(page,[]),{removed:0,failed:[]});

@@ -1,6 +1,14 @@
 import type { Page } from 'playwright';
 import { parseVisibleCard, type VisibleCard } from './visible-card.js';
 
+// Shared label pattern. Meta renders the library id in Spanish
+// ("Identificador de la biblioteca: 1234567") or English ("Library ID: 1234567").
+// Every DOM pass (live extraction, pagination snapshot, prune, inspection) uses
+// this single source, so a non-Spanish UI is never silently skipped. It is a
+// string because page.evaluate serializes its callback: outer module variables
+// do not exist inside the browser. Functions receive it as an explicit argument.
+export const LABEL_PATTERN = '^(?:Identificador de la biblioteca|Library ID):\\s*(\\d{5,30})$';
+
 export interface LoadedPageInspection {
   url: string;
   title: string;
@@ -15,50 +23,65 @@ export interface PruneResult {
   failed: string[];
 }
 
-// Removes already-extracted ad card nodes from the live DOM so the browser
-// does not retain thousands of heavy nodes (images, text, links) that cause
-// OOM during long scrapes. Scroll and pagination selectors are unaffected:
-// querySelectorAll returns a static snapshot, and removed labels no longer
-// match the card regex, so paginationSnapshot keeps computing the correct
-// bottom of the still-visible results.
+// Frees the heavy payload (images, iframes, text, links) of already-persisted
+// ad cards and leaves a height-preserving skeleton in place. Replacing the node
+// outright was the root cause of two regressions:
+//   1. paginationSnapshot() anchors lastBottom on the bottom of the last result
+//      label; deleting every visible card collapsed the anchor to y=0, so
+//      advertiser-card "Ver más" buttons passed the belowResults filter and the
+//      scraper clicked external links.
+//   2. With the anchor gone the loop clicked forever (Phase 2.5 audit).
+// The skeleton keeps the anchor alive (the snapshot also measures
+// [data-msr-pruned] nodes) while the heavy content is released now.
 export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: string[]): Promise<PruneResult> {
   if (!ids.length) return { removed: 0, failed: [] };
-  const result = await page.evaluate((targetIds: string[]) => {
+  return await page.evaluate(([pattern, targetIds]: [string, string[]]) => {
+    const labelRegex = new RegExp(pattern, 'i');
     const removed: string[] = [];
     const failed: string[] = [];
     const known = new Set(targetIds);
     const spans = [...document.querySelectorAll('span')].filter(e =>
-      /^Identificador de la biblioteca:\s*\d{5,30}$/.test(e.textContent?.trim() ?? ''));
+      labelRegex.test(e.textContent?.trim() ?? ''));
     for (const label of spans) {
-      const id = label.textContent!.match(/\d{5,30}/)![0]!;
-      if (!known.has(id)) continue;
+      const id = label.textContent?.match(labelRegex)?.[1];
+      if (!id || !known.has(id)) continue;
       let card: Element | null = label;
       while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))
         card = card.parentElement;
       if (!card) { failed.push(id); continue; }
-      try { card.remove(); removed.push(id); } catch { failed.push(id); }
+      try {
+        const rect = (card as HTMLElement).getBoundingClientRect();
+        const skeleton = document.createElement('div');
+        skeleton.setAttribute('data-msr-pruned', id);
+        skeleton.style.height = `${Math.max(1, Math.round(rect.height))}px`;
+        skeleton.style.minHeight = `${Math.max(1, Math.round(rect.height))}px`;
+        skeleton.style.overflow = 'hidden';
+        card.replaceWith(skeleton);
+        removed.push(id);
+      } catch { failed.push(id); }
     }
     return { removed: removed.length, failed };
-  }, ids);
-  return result;
+  }, [LABEL_PATTERN, ids] as [string, string[]]);
 }
 
 // Reads the current DOM only. It never calls goto, reload, scroll or fetch.
 export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<LoadedPageInspection> {
-  const snapshot = await page.evaluate(() => {
+  const snapshot = await page.evaluate((pattern: string) => {
+    const labelRegex = new RegExp(pattern, 'i');
     const text = document.body?.innerText ?? '';
     const labels = [...document.querySelectorAll('span')].filter(element =>
-      /^(?:Identificador de la biblioteca|Library ID):\s*\d{5,30}$/i.test(element.textContent?.trim() ?? ''));
+      labelRegex.test(element.textContent?.trim() ?? ''));
     const cards: VisibleCard[] = [];
     for (const label of labels) {
-      const id = label.textContent?.match(/\d{5,30}/)?.[0];
+      const id = label.textContent?.match(labelRegex)?.[1];
       if (!id) continue;
       let card: Element | null = label;
       while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))
         card = card.parentElement;
       if (!card) continue;
+      if (card.closest('[data-msr-pruned]')) continue;
       const ids = [...card.querySelectorAll('span')].filter(element =>
-        /^(?:Identificador de la biblioteca|Library ID):\s*\d{5,30}$/i.test(element.textContent?.trim() ?? ''));
+        labelRegex.test(element.textContent?.trim() ?? ''));
       if (ids.length !== 1) continue;
       cards.push({id,text:(card as HTMLElement).innerText ?? '',
         description:card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null,
@@ -66,7 +89,7 @@ export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<L
     }
     return {url:location.href,title:document.title,cards,
       accessCheckVisible:/captcha|security check|verifica tu identidad|verify your identity|temporarily blocked/i.test(text.slice(0,5000))};
-  });
+  }, LABEL_PATTERN);
   const uniqueIds = [...new Set(snapshot.cards.map(card => card.id))];
   const seen = new Set<string>();
   const ads = snapshot.cards.map(parseVisibleCard).filter((ad): ad is Record<string,unknown> => {

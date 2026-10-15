@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createInterface } from 'node:readline';
-import { browserContextOptions } from './browser-compat.js';
+import { stealthContextOptions, stealthInitScript, stealthLaunchOptions } from './browser-compat.js';
 import { acquireBrowserSessionLock } from './session-lock.js';
 
 export type ProfileKind = 'main' | 'temp';
@@ -76,7 +76,9 @@ export async function openProfile(kind:ProfileKind):Promise<void> {
   const onLine=(line:string)=>{if(line.trim().toLowerCase()==='q') requestClose();else console.log('Escribí q para cerrar Chromium.');};
   try {
     profile=prepareProfile(kind);
-    context=await chromium.launchPersistentContext(profile.path,{...browserContextOptions,headless:false,handleSIGINT:false});
+    context=await chromium.launchPersistentContext(profile.path,
+      {...stealthContextOptions(),...stealthLaunchOptions({headless:false,handleSIGINT:false},'chromium')});
+    await context.addInitScript(stealthInitScript);
     context.on('close',done);
     if(!context.pages().length) await context.newPage();
     io.on('line',onLine);io.on('SIGINT',onSigint);

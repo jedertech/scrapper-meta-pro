@@ -1,23 +1,22 @@
-# SPRINTS DE DESARROLLO: ENTERPRISE SCRAPER
+# TAREA ACTUAL: Fase 2.5 - Auditoría Git, Corrección de Regresiones y Estabilización Core
 
-## FASE ACTUAL: Fase 2 - Optimización de Memoria (SQLite Batching & RAM)
-**Objetivo:** El DOM Pruning ya funciona (validado a 1800+ ads). Ahora debemos optimizar las estructuras de datos en RAM (`src/storage.ts` y el Runner) para que Node.js no acumule miles de objetos antes de guardarlos.
+**Objetivo Crítico:** Las iteraciones anteriores rompieron el scraper. Actualmente NO extrae datos, hace clic en enlaces externos en lugar del botón de paginación, entra en bucles infinitos, el DOM Pruning no funciona, y el navegador es detectado como bot (impidiendo el login persistente y bloqueando ejecuciones headless o en segundo plano).
 
-**Acciones para el Agente (Fase 2):**
-1.  **Investigar:** Analiza `src/storage.ts`, los arrays temporales (`pending`, `seen` o similares) y cómo se realiza el guardado en SQLite.
-2.  **Desarrollar Batching:** Implementa un sistema donde los anuncios extraídos se guarden en SQLite en lotes constantes (ej. cada 50 o 100 anuncios) usando transacciones (`BEGIN TRANSACTION`). Inmediatamente después de confirmar el guardado, los arrays de acumulación en RAM **deben vaciarse** para liberar memoria.
-3.  **Integridad (Deduplicación):** Asegura que al vaciar los arrays temporales en RAM, la deduplicación no se rompa (el scraper debe seguir verificando contra SQLite si un anuncio ya fue visto, en lugar de depender solo de la RAM).
-4.  **Logging:** Agrega logs estructurados del tipo `[Storage] Flushed 100 ads to DB. RAM cleared.`
-5.  **Testing & Commit:** Ejecuta los tests unitarios. Si todo pasa, haz el commit atómico y pide Checkpoint.
+**Instrucciones de Auditoría y Corrección para el Agente:**
 
-**ESTADO FASE 2: COMPLETA**
-- `Storage.hasAd`/`Storage.filterNewAds`: deduplicación respaldada por SQLite.
-- Runners (`runner.ts`, `session-runner.ts`): batching constante de 100 anuncios por transacción (`FLUSH_BATCH_SIZE`); el buffer se vacía tras cada `persistBatch` y los anuncios pendientes se confirman también en el camino de error.
-- Extractor: `pending`, `seen` y `receivedIds` se vacían después de cada lote confirmado (`flushMemory`); la dedup cruzada pasa por SQLite vía `filterNewAds` inyectado desde la CLI.
-- Logs estructurados `[Storage] Flushed N ads to DB. RAM cleared; pending:M` en el flujo de diagnósticos.
-- Tests: 3 nuevos en `tests/core.test.mjs` (filterNewAds/hasAd, trozos ≤100 sin pérdida, confirmación tras interrupción). Suite completa: 98/98 offline. Benchmark local 20.000 ads: 130 MB RSS, integridad OK.
-- Nota: `npm run test:browser-local` ya fallaba en esta máquina antes de la Fase 2 (problema de entorno WSL, no regresión).
-
-**CRÍTICO**
-1. IDIOMA: SIEMPRE comunícate conmigo y escribe tus planes en tu salida de terminal en ESPAÑOL.
-2. LOCALIZACIÓN: NO salgas de la carpeta del proyecto ("/proyectos/scrapper-meta-pro").
+1. **Auditoría de Git (Rollback Lógico):** 
+   - Revisa los últimos cambios en `src/extractors.ts`, `src/dom-inspection.ts` y `src/pagination.ts`. 
+   - Identifica por qué la extracción dejó de funcionar y por qué el selector de paginación está haciendo clic en enlaces externos de anunciantes.
+2. **Corrección de Paginación ("Ver más"):** 
+   - El botón "Ver más" nativo de Meta solo debe tocarse cuando sea estrictamente necesario para cargar más resultados. Corrige el selector para que NO haga clic en las tarjetas de anuncios. Elimina el bucle infinito.
+3. **Resurrección del DOM Pruning:** 
+   - Asegúrate de que los nodos HTML se eliminen de la pantalla JUSTO ANTES de vaciar el array `seen` en RAM, operando solo sobre los IDs que ya fueron guardados en SQLite.
+4. **Anti-Detección, Headless y Pérdida de Foco:** 
+   - Implementa `playwright-extra` con `puppeteer-extra-plugin-stealth` en la inicialización del navegador (`src/browser-profiles.ts` o runner).
+   - Configura el contexto como verdaderamente persistente para que el usuario pueda iniciar sesión una sola vez sin caer en el loop de verificación de robots de Meta.
+   - Pasa los flags a Chromium para evitar que congele la pestaña al perder el foco (`--disable-background-timer-throttling`, `--disable-renderer-backgrounding`, etc.) y sobrescribe `document.visibilityState` a `visible`.
+5. **Pruebas y Validación E2E:** 
+   - Los tests unitarios en `tests/` DEBEN pasar.
+   - Ejecuta la prueba contra Meta Ads para validar que extrae correctamente, no abre webs externas y no hace OOM:
+   `./meta-scraper session --url 'https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=remera&search_type=keyword_unordered&sort_data[direction]=desc&sort_data[mode]=total_impressions' --limit 50 --db test-live --visible`
+6. **Documentación:** Registra los hallazgos de tu auditoría y las soluciones en `docs/phases_log.md`.
