@@ -251,6 +251,33 @@ test('DOM pruning poda a esqueleto sin eliminar el ancla de resultados',async()=
   const result=await pruneVisibleCards(page,ids);
   assert.equal(result.removed,3);assert.deepEqual(result.failed,[]);
 });
+test('Fase 3: extractor e inspectLoadedPage ignoran esqueletos data-msr-pruned',async()=>{
+  const { chromium } = await import('playwright');
+  const { inspectLoadedPage } = await import('../dist/dom-inspection.js');
+  const html = `<!doctype html><html><body><div id="app">
+    <div class="card">
+      <a href="https://www.facebook.com/123456/">Empresa</a>
+      <div data-msr-pruned="111111" style="height:50px"><span>Identificador de la biblioteca: 111111</span></div>
+      <span>Activo</span>
+    </div>
+    <div class="card">
+      <span>Identificador de la biblioteca: 222222</span>
+      <span>Activo</span>
+      <a href="https://www.facebook.com/123456/">Empresa</a>
+    </div>
+  </div></body></html>`;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.setContent(html);
+    const inspection = await inspectLoadedPage(page);
+    assert.equal(inspection.visibleCards, 1);
+    assert.deepEqual(inspection.uniqueIds, ['222222']);
+  } finally {
+    await browser.close();
+  }
+});
 test('DOM pruning es tolerante a fallos y solo avisa al scraper',async()=>{
   const page={evaluate:async()=>{throw new Error('Target page closed');}};
   let threw=false;

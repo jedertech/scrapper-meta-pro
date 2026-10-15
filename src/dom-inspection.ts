@@ -40,7 +40,12 @@ export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: strin
     const removed: string[] = [];
     const failed: string[] = [];
     const known = new Set(targetIds);
-    const spans = [...document.querySelectorAll('span')].filter(e =>
+    // `span:not([data-msr-pruned] *)` excludes any span that sits inside a
+    // pruned skeleton. The while loop below walks up to the card container;
+    // without this the label can be read out of a skeleton whose real card
+    // was already replaced, the walk escapes through the parent, and the
+    // same ad is extracted again as a duplicate.
+    const spans = [...document.querySelectorAll('span:not([data-msr-pruned] *)')].filter(e =>
       labelRegex.test(e.textContent?.trim() ?? ''));
     for (const label of spans) {
       const id = label.textContent?.match(labelRegex)?.[1];
@@ -69,7 +74,7 @@ export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<L
   const snapshot = await page.evaluate((pattern: string) => {
     const labelRegex = new RegExp(pattern, 'i');
     const text = document.body?.innerText ?? '';
-    const labels = [...document.querySelectorAll('span')].filter(element =>
+    const labels = [...document.querySelectorAll('span:not([data-msr-pruned] *)')].filter(element =>
       labelRegex.test(element.textContent?.trim() ?? ''));
     const cards: VisibleCard[] = [];
     for (const label of labels) {

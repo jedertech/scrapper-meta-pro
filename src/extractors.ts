@@ -538,14 +538,17 @@ export class PlaywrightExtractor implements Extractor {
           const labelRegex=new RegExp(pattern,'i');
           const out: VisibleCard[] = [];
           const known=new Set(knownIds);
-          const spans = [...document.querySelectorAll('span')].filter(e => labelRegex.test(e.textContent?.trim() ?? ''));
+          const spans = [...document.querySelectorAll('span:not([data-msr-pruned] *)')].filter(e => labelRegex.test(e.textContent?.trim() ?? ''));
           for (const label of spans) {
             const id = label.textContent?.match(labelRegex)?.[1];
             if (!id || known.has(id)) continue;
             let card: Element | null = label;
             while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2)) card=card.parentElement;
             if (!card) continue;
-            if (card.closest('[data-msr-pruned]')) continue;
+            // Solution B: the while loop can walk out of a pruned skeleton's
+            // replacement div into the real parent card. Reject any card that
+            // is, or contains, or is contained by a skeleton.
+            if (card.hasAttribute('data-msr-pruned') || card.closest('[data-msr-pruned]') || card.querySelector('[data-msr-pruned]')) continue;
             const ids=[...card.querySelectorAll('span')].filter(e => labelRegex.test(e.textContent?.trim() ?? ''));
             if (ids.length !== 1) continue;
             const description=card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null;

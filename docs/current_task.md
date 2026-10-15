@@ -1,22 +1,18 @@
-# TAREA ACTUAL: Fase 2.5 - Auditoría Git, Corrección de Regresiones y Estabilización Core
+# TAREA ACTUAL: Fase 3 - Estabilidad en Segundo Plano (Visible) y Deduplicación del DOM
 
-**Objetivo Crítico:** Las iteraciones anteriores rompieron el scraper. Actualmente NO extrae datos, hace clic en enlaces externos en lugar del botón de paginación, entra en bucles infinitos, el DOM Pruning no funciona, y el navegador es detectado como bot (impidiendo el login persistente y bloqueando ejecuciones headless o en segundo plano).
+**Objetivo:** El scraper corre en modo visible en un escritorio secundario, pero arroja duplicados por los esqueletos del DOM Pruning. NO usaremos playwright-extra.
 
-**Instrucciones de Auditoría y Corrección para el Agente:**
+**Instrucciones de Corrección (LÍNEA ROJA: PROHIBIDO TOCAR LÓGICA DE MEMORIA O SQLITE):**
 
-1. **Auditoría de Git (Rollback Lógico):** 
-   - Revisa los últimos cambios en `src/extractors.ts`, `src/dom-inspection.ts` y `src/pagination.ts`. 
-   - Identifica por qué la extracción dejó de funcionar y por qué el selector de paginación está haciendo clic en enlaces externos de anunciantes.
-2. **Corrección de Paginación ("Ver más"):** 
-   - El botón "Ver más" nativo de Meta solo debe tocarse cuando sea estrictamente necesario para cargar más resultados. Corrige el selector para que NO haga clic en las tarjetas de anuncios. Elimina el bucle infinito.
-3. **Resurrección del DOM Pruning:** 
-   - Asegúrate de que los nodos HTML se eliminen de la pantalla JUSTO ANTES de vaciar el array `seen` en RAM, operando solo sobre los IDs que ya fueron guardados en SQLite.
-4. **Anti-Detección, Headless y Pérdida de Foco:** 
-   - Implementa `playwright-extra` con `puppeteer-extra-plugin-stealth` en la inicialización del navegador (`src/browser-profiles.ts` o runner).
-   - Configura el contexto como verdaderamente persistente para que el usuario pueda iniciar sesión una sola vez sin caer en el loop de verificación de robots de Meta.
-   - Pasa los flags a Chromium para evitar que congele la pestaña al perder el foco (`--disable-background-timer-throttling`, `--disable-renderer-backgrounding`, etc.) y sobrescribe `document.visibilityState` a `visible`.
-5. **Pruebas y Validación E2E:** 
-   - Los tests unitarios en `tests/` DEBEN pasar.
-   - Ejecuta la prueba contra Meta Ads para validar que extrae correctamente, no abre webs externas y no hace OOM:
-   `./meta-scraper session --url 'https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&is_targeted_country=false&media_type=all&q=remera&search_type=keyword_unordered&sort_data[direction]=desc&sort_data[mode]=total_impressions' --limit 50 --db test-live --visible`
-6. **Documentación:** Registra los hallazgos de tu auditoría y las soluciones en `docs/phases_log.md`.
+1. **Deduplicación de Nodos (Corrección Exacta del Bucle While):**
+   - El extractor principal vuelve a leer los esqueletos porque el bucle `while` escala al contenedor padre y evade la regla `closest`.
+   - Solución A: Cambia los selectores base en `src/extractors.ts` y `src/dom-inspection.ts` para que ignoren hijos de esqueletos: usa `document.querySelectorAll('span:not([data-msr-pruned] *)')`.
+   - Solución B: En el bucle de extracción principal, inmediatamente después de que el while defina `card`, agrega esta validación estricta para matarlo si tocó un esqueleto:
+     `if (card.hasAttribute('data-msr-pruned') || card.closest('[data-msr-pruned]') || card.querySelector('[data-msr-pruned]')) continue;`
+2. **Anti-Throttling (Para usar la PC):**
+   - En `src/browser-compat.ts` (o donde se inicie el contexto), inyecta un script (`addInitScript`) que sobrescriba `document.hidden = false` y `document.visibilityState = 'visible'`.
+   - Asegúrate de pasar a Chromium los args: `--disable-background-timer-throttling`, `--disable-renderer-backgrounding`, `--disable-backgrounding-occluded-windows`.
+3. **Pruebas y Documentación:**
+   - Actualiza los tests offline para verificar que los nodos con `data-msr-pruned` son ignorados.
+   - Escribe el resumen técnico de la Fase 2.5 y de esta Fase 3 en `docs/phases_log.md`.
+   - Detente y avísame cuando los tests pasen para que YO lance la prueba E2E manualmente. TIENES PROHIBIDO crear archivos temporales o descargar el HTML de Meta.
