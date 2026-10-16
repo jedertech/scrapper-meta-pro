@@ -126,6 +126,22 @@ export class Storage {
   // Dedup backing outside of RAM: lets callers drop in-memory accumulators
   // (extractor Sets, runner buffers) once every confirmed ad is in SQLite.
   hasAd(adId: string): boolean { return this.db.prepare('SELECT 1 FROM ads WHERE id=?').get(adId) !== undefined; }
+  // Dedup AISLADO por base de datos activa. Solo los IDs que ya existen en
+  // database_ads para ese database_id se consideran duplicados. Una base nueva
+  // arranca con cero duplicados aunque el anuncio haya sido visto en otra base.
+  // Esto resuelve el filtro global de la Fase 4.2: el WHERE acota a un solo db.
+  filterNewAdsForDatabase(databaseId: number, ids: string[]): string[] {
+    if (!ids.length) return [];
+    const unique = [...new Set(ids)];
+    const existing = new Set(
+      (this.db.prepare(
+        `SELECT ad_id AS id FROM database_ads WHERE database_id=? AND ad_id IN (${unique.map(() => '?').join(',')})`
+      ).all(databaseId, ...unique) as Array<Record<string, unknown>>).map(row => String(row.id))
+    );
+    return unique.filter(id => !existing.has(id));
+  }
+  // Mantiene la firma original para tests offline y diagnostics que no conocen
+  // el database_id. Consulta la tabla global ads (comportamiento anterior).
   filterNewAds(ids: string[]): string[] {
     if (!ids.length) return [];
     const unique=[...new Set(ids)];

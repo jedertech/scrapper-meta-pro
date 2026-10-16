@@ -174,8 +174,11 @@ async function main(): Promise<void> {
       const mode=opt('mode','ads') as Mode; if (!['ads','advertisers'].includes(mode)) throw new Error('Modo inválido');
       const base=opt('db',storage.defaultBase() ?? undefined); if (!base) throw new Error('Seleccione una base con db use o --db');
       const browser=opt('browser','chromium')!;
-      const selectedExtractor=extractor(browser,limit,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds});
+      // Fase 4.2: el job se crea primero para obtener su database_id y acotar
+      // el dedup solo a los anuncios de esta base, no a toda la tabla ads.
       const job=storage.createJob(base,url,mode,'playwright',browser,limit);
+      const filterForThisBase=(ids:string[])=>storage.filterNewAdsForDatabase(job.database_id,ids);
+      const selectedExtractor=extractor(browser,limit,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds:filterForThisBase});
       const startingAds=job.unique_ads;
       const startingObserved=job.observed;
       console.log(`Trabajo: ${job.id} | navegador: ${browser} (${visible?'visible':'headless'})`);
@@ -192,10 +195,12 @@ async function main(): Promise<void> {
       const id=opt('job'); if (!id) throw new Error('--job requerido');
       if (opt('target-total')) storage.setTarget(id,number(opt('target-total'),'target-total'));
       const job=storage.job(id); if (job.method !== 'playwright') throw new Error('Trabajo de un método retirado; cree una nueva búsqueda');
+      // Fase 4.2: dedup aislado al database_id del job que se reanuda.
+      const filterForResume=(ids:string[])=>storage.filterNewAdsForDatabase(job.database_id,ids);
       const startingAds=job.unique_ads;
       const startingObserved=job.observed;
       const controller=new AbortController(); process.once('SIGINT',()=>controller.abort()); process.once('SIGTERM',()=>controller.abort());
-      const result=await runJob(storage,id,extractor(job.browser,job.target_total,{headless:!visible,onDiagnostic:logDiagnostic}),controller.signal,(updated,seconds)=>{
+      const result=await runJob(storage,id,extractor(job.browser,job.target_total,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds:filterForResume}),controller.signal,(updated,seconds)=>{
         const stats=storage.stats(job.db_name) as {ads:number;advertisers:number};
         writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
       });

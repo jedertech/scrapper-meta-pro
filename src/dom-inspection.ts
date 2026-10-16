@@ -51,12 +51,10 @@ export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: strin
       const id = label.textContent?.match(labelRegex)?.[1];
       if (!id || !known.has(id)) continue;
       let card: Element | null = label;
-      // Fase 4.1: Meta inyecta spans duplicados con el mismo ID en algunos
-      // anuncios (Lead Gen / Ebooks). Contar spans crudos rompe la subida
-      // hacia el contenedor: el primer nivel con 2 spans parecia ser la
-      // tarjeta y se cortaba. Se recolectan los IDs en un Set y solo se
-      // detiene cuando hay más de un ID ÚNICO, tolerando el mismo ID
-      // repetido. Nunca se asciende al BODY.
+      // ── Fase 1: ID-boundary ────────────────────────────────────────────────
+      // Sube mientras el padre tenga ≤ 1 ID único (tolera spans duplicados del
+      // mismo ID que Meta inyecta en anuncios Lead Gen/Ebooks). Se detiene
+      // cuando el padre ya contiene 2 o más anuncios distintos. Nunca toca body.
       while (card && card.parentElement && card.parentElement !== document.body) {
         const ids = new Set<string>();
         for (const el of card.parentElement.querySelectorAll('span')) {
@@ -67,7 +65,36 @@ export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: strin
         card = card.parentElement;
       }
       if (!card) { failed.push(id); continue; }
+      // ── Fase 2: Ascenso estructural puro ──────────────────────────────────
+      // Sin depender de img/video/a: sube mientras el padre tiene exactamente
+      // 1 hijo de tipo elemento (Element). Esto garantiza capturar la tarjeta
+      // visual completa aunque los assets gráficos no hayan cargado (scroll
+      // masivo con lazy-loading throttling). Se detiene al llegar a un nodo
+      // que es sibling real de otras tarjetas (padre con >1 hijo elemento).
+      // Nunca asciende al body ni a elementos con role="main"/"feed".
+      while (
+        card &&
+        card.parentElement &&
+        card.parentElement !== document.body &&
+        !/^(main|feed)$/i.test(card.parentElement.getAttribute('role') ?? '')
+      ) {
+        const parentEl: HTMLElement = card.parentElement;
+        let elementChildCount = 0;
+        for (const child of parentEl.children) {
+          if (child.nodeType === 1) elementChildCount++;
+        }
+        if (elementChildCount !== 1) break;
+        const parentIds = new Set<string>();
+        for (const el of parentEl.querySelectorAll('span')) {
+          const m = el.textContent?.match(labelRegex);
+          if (m) parentIds.add(m[1]!);
+        }
+        if (parentIds.size > 1) break;
+        card = parentEl;
+      }
+      if (!card) { failed.push(id); continue; }
       try {
+
         const rect = (card as HTMLElement).getBoundingClientRect();
         const skeleton = document.createElement('div');
         skeleton.setAttribute('data-msr-pruned', id);
@@ -94,10 +121,9 @@ export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<L
       const id = label.textContent?.match(labelRegex)?.[1];
       if (!id) continue;
       let card: Element | null = label;
-      // Fase 4.1: Se asciende por los padres hasta encontrar un contenedor
-      // con más de un ID ÚNICO (Set), lo que marca el límite de la tarjeta.
-      // Se tolera que el mismo ID esté inyectado dos veces: lo que importa
-      // es la cantidad de IDs distintos, no de spans. Nunca se llega al BODY.
+      // ── Fase 1: ID-boundary ──────────────────────────────────────────────
+      // Sube mientras el padre tenga ≤ 1 ID único. Tolera spans duplicados
+      // del mismo ID (patrón Lead Gen/Ebooks de Meta). Nunca toca body.
       while (card && card.parentElement && card.parentElement !== document.body) {
         const ids = new Set<string>();
         for (const el of card.parentElement.querySelectorAll('span')) {
@@ -109,6 +135,31 @@ export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<L
       }
       if (!card) continue;
       if (card.closest('[data-msr-pruned]')) continue;
+      // ── Fase 2: Ascenso estructural puro ────────────────────────────────
+      // Sin depender de img/video/a: sube mientras el padre tiene exactamente
+      // 1 hijo elemento. Captura la tarjeta visual completa aunque los assets
+      // gráficos no hayan cargado. Nunca sube a role="main"/"feed".
+      while (
+        card &&
+        card.parentElement &&
+        card.parentElement !== document.body &&
+        !/^(main|feed)$/i.test(card.parentElement.getAttribute('role') ?? '')
+      ) {
+        const parentEl: HTMLElement = card.parentElement;
+        let elementChildCount = 0;
+        for (const child of parentEl.children) {
+          if (child.nodeType === 1) elementChildCount++;
+        }
+        if (elementChildCount !== 1) break;
+        const parentIds = new Set<string>();
+        for (const el of parentEl.querySelectorAll('span')) {
+          const m = el.textContent?.match(labelRegex);
+          if (m) parentIds.add(m[1]!);
+        }
+        if (parentIds.size > 1) break;
+        card = parentEl;
+      }
+      if (!card) continue;
       const ids = new Set<string>();
       for (const el of card.querySelectorAll('span')) {
         const m = el.textContent?.match(labelRegex);

@@ -596,11 +596,7 @@ export class PlaywrightExtractor implements Extractor {
               const id = label.textContent?.match(labelRegex)?.[1];
               if (!id || known.has(id)) continue;
               let card: Element | null = label;
-              // Fase 4.1: Se asciende por los padres contando IDs ÚNICOS (Set),
-              // no spans. Meta inyecta spans duplicados con el mismo ID; contar
-              // spans crudos cortaba la subida en el primer nivel con 2 spans
-              // y descartaba el anuncio. Se detiene al encontrar más de un ID
-              // distinto y nunca se asciende al BODY.
+              // ── Fase 1: ID-boundary ──────────────────────────────────────────────
               while (card && card.parentElement && card.parentElement !== document.body) {
                 const ids = new Set<string>();
                 for (const el of card.parentElement.querySelectorAll('span')) {
@@ -611,16 +607,34 @@ export class PlaywrightExtractor implements Extractor {
                 card = card.parentElement;
               }
               if (!card) continue;
-              // Fase 4.1: Validación corregida. Solo ignoramos la tarjeta si es un
-              // esqueleto o está dentro de uno. Evitamos el 'querySelector' nuclear
-              // que descartaba grillas enteras.
               if (card.closest('[data-msr-pruned]')) continue;
+              // ── Fase 2: Ascenso estructural puro ────────────────────────────────
+              while (
+                card &&
+                card.parentElement &&
+                card.parentElement !== document.body &&
+                !/^(main|feed)$/i.test(card.parentElement.getAttribute('role') ?? '')
+              ) {
+                const parentEl: HTMLElement = card.parentElement;
+                let elementChildCount = 0;
+                for (const child of parentEl.children) {
+                  if (child.nodeType === 1) elementChildCount++;
+                }
+                if (elementChildCount !== 1) break;
+                const parentIds = new Set<string>();
+                for (const el of parentEl.querySelectorAll('span')) {
+                  const m = el.textContent?.match(labelRegex);
+                  if (m) parentIds.add(m[1]!);
+                }
+                if (parentIds.size > 1) break;
+                card = parentEl;
+              }
+              if (!card) continue;
               const ids = new Set<string>();
               for (const el of card.querySelectorAll('span')) {
                 const m = el.textContent?.match(labelRegex);
                 if (m) ids.add(m[1]!);
               }
-              // Fase 4.1: uniqueIds.size !== 1 en lugar de ids.length !== 1.
               if (ids.size !== 1) continue;
               const description = card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null;
               out.push({

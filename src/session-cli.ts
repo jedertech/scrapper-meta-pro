@@ -42,11 +42,14 @@ export async function startPersistentSession(storage:Storage,dataDir:string,base
   const health=new BrowserHealth();
   let activeJobId:string|null=null,lastExport:string|null=null,sessionState='RUNNING';
   const recordDiagnostic=(event:DiagnosticEvent)=>{const tagged={...event,jobId:activeJobId??undefined};health.observe(tagged);onDiagnostic(tagged);};
+  // Fase 4.2: el dedup se acota al database_id de la base activa. Una sesión
+  // nueva o en otra base no rechaza anuncios que existan en otras bases.
+  const sessionDatabaseId = storage.baseId(base);
   let mainPageClosed=false,browserNeedsReopen=false,intentionalBrowserClose=false;
   const makeExtractor=()=>new PlaywrightExtractor('chromium',scrollBudgetForTarget(target),{
     headless:false,persistentSession:true,onDiagnostic:recordDiagnostic,
     profileDir:profile?.path,
-    filterNewAds:ids=>storage.filterNewAds(ids),
+    filterNewAds:ids=>storage.filterNewAdsForDatabase(sessionDatabaseId,ids),
     onPageClosed:()=>{if(closing||ended||intentionalBrowserClose) return;mainPageClosed=true;console.log('La pestaña principal se cerró. El trabajo permanece en SQLite; r reabrirá el perfil y la búsqueda.');}
   });
   let extractor=makeExtractor();

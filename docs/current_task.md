@@ -1,22 +1,20 @@
-# TAREA ACTUAL: Fase 4.1 - Fix de Cero Anuncios (DOM Traversal & Duplicated Spans)
+# TAREA ACTUAL: Fase 4.2 - Dedup Local y DOM Traversal Independiente de Media
 
-**Objetivo:** El scraper arroja "0 anuncios detectados" y el DOM no se limpia porque el bucle de extracción descarta los anuncios si detecta múltiples `span` o si el anuncio no tiene un link directo a `facebook.com`. Meta inyecta spans duplicados ocultos en anuncios de Lead Gen o Ebooks, lo que rompe el contador actual.
+**Objetivos:** 
+1. Aislar las bases de datos SQLite para que los duplicados se validen localmente, no globalmente.
+2. Hacer que el extractor no dependa de imágenes/videos para identificar el contenedor de un anuncio, ya que en extracciones masivas (>3000 ads) Meta no carga los assets (lazy-loading throttling) y el scraper deja basura en el DOM.
 
-**Instrucciones de Corrección (LÍNEA ROJA: PROHIBIDO TOCAR LÓGICA DE MEMORIA, PACING O SQLITE):**
+**Instrucciones de Corrección:**
 
-1. **Fix del Bucle de Extracción (Tolerancia a Spans Duplicados):**
-   - Archivos a modificar: `src/extractors.ts` (líneas ~540) y `src/dom-inspection.ts` (en `inspectLoadedPage` y `pruneVisibleCards`).
-   - Reemplaza el bucle actual (`while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))`) por un algoritmo robusto.
-   - **Lógica Obligatoria:** 
-     1. Escala por los padres (`card.parentElement`) asegurando no llegar nunca al `BODY`.
-     2. En lugar de contar la cantidad cruda de `spans`, extrae los IDs con `labelRegex` y mételos en un `Set`. Cuenta la cantidad de IDs ÚNICOS (`uniqueIds.size`).
-     3. Si la tarjeta actual tiene exactamente 1 ID único y contiene contenido visual (`img` o `video`), ese es el contenedor correcto del anuncio.
-     4. Elimina la condición estricta de `ids.length !== 1` al final, cámbiala por `uniqueIds.size !== 1` para tolerar que el mismo ID esté inyectado dos veces en el HTML.
+1. **Aislamiento de Bases de Datos (`src/storage.ts`):**
+   - El método `filterNewAds` está validando los IDs contra toda la tabla `ads` históricamente.
+   - Modifica la tabla, el esquema o las sentencias SQL para que el `WHERE` respete el archivo de base de datos actual o la sesión activa. Una `--db` nueva debe tener cero duplicados aunque el anuncio exista en otras bases.
 
-2. **Fix de Ceguera del Extractor:**
-   - En `src/extractors.ts`, asegúrate de que la validación de los esqueletos sea únicamente: `if (card.closest('[data-msr-pruned]')) continue;`.
-   - ELIMINA cualquier uso de `card.querySelector('[data-msr-pruned]')` para evitar que rechace la grilla entera.
+2. **Extracción sin dependencia de Media (`src/extractors.ts` y `src/dom-inspection.ts`):**
+   - Elimina la condición `if (card.querySelector('img, video'))` en los bucles `while` de búsqueda de contenedor.
+   - **Nueva Heurística:** El contenedor correcto del anuncio es aquel que tiene 1 único ID de biblioteca (tolerando spans duplicados del mismo ID) PERO que representa la tarjeta estructural completa. 
+   - Diseña un método basado en clases de Meta (ej. buscar el primer padre con estilo de caja, o seguir subiendo hasta justo antes de tocar el contenedor de 2 IDs). Debe capturar la tarjeta completa para que el DOM Pruning borre el nodo visual completo sin depender de que los assets gráficos hayan cargado.
 
 3. **Pruebas (Offline y Live):**
-   - Ejecuta `npm run build && npm test` para validar la lógica.
-   - Realiza una extracción E2E real buscando extraer 100 anuncios de forma limpia. El DOM DEBE irse vaciando (DOM Pruning) y no deben registrarse duplicados en SQLite.
+   - Corre `npm run build && npm test`.
+   - Ejecuta una prueba viva de 50 anuncios en una base limpia. Monitorea que 1) No haya dedup global y 2) El DOM Pruning elimine visualmente las cajas de los anuncios aunque no hayan renderizado fotos.
