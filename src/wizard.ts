@@ -16,7 +16,25 @@ else {
   let storage=new Storage(join(dataDir,'meta-scraper.sqlite'));
   const io=createInterface({input:process.stdin,output:process.stdout});
   let sessionHandoff=false;
-  const ask=async (question:string, fallback=''):Promise<string> => (await io.question(question)).trim() || fallback;
+  const onSigint = () => {
+    process.stdout.write('\nCerrando programa de forma segura...\n');
+    try { io.close(); } catch {}
+    try { storage.close(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', onSigint);
+  io.on('SIGINT', onSigint);
+  const ask=async (question:string, fallback=''):Promise<string> => {
+    try {
+      return (await io.question(question)).trim() || fallback;
+    } catch (err: any) {
+      if (err?.code === 'ERR_USE_AFTER_CLOSE') {
+        process.stdout.write('\nCerrando programa de forma segura...\n');
+        process.exit(0);
+      }
+      throw err;
+    }
+  };
   const runCli=async (args:string[]):Promise<number> => {
     if(args[0]==='session'||(args[0]==='profile'&&args[1]==='open')) {
       // The child owns stdin for the entire visible session. A second readline
@@ -167,5 +185,11 @@ else {
         else console.log('Elegí una opción del 0 al 9.');
       } catch(error) {console.error((error as Error).message);}
     }
-  } finally {if(!sessionHandoff) {io.close();storage.close();}}
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    if(!sessionHandoff) {
+      try { io.close(); } catch {}
+      try { storage.close(); } catch {}
+    }
+  }
 }

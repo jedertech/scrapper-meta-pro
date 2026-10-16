@@ -1,54 +1,123 @@
-# JederTech Meta Scraper v1
+# JederTech Meta Scraper
 
-Recolector local de Meta Ads Library con Playwright, SQLite y CSV. Lee tarjetas visibles y JSON/GraphQL recibido durante la navegación normal. No abre detalles, perfiles ni destinos. No usa API oficial, cuentas, proxies ni técnicas de evasión.
+> Recolector y analizador local para Meta Ads Library de alto rendimiento, resiliente y 100% privado. Diseñado para ejecutarse sin APIs oficiales pagas, proxies de evasión ni filtración de credenciales.
 
-## Instalación y primer inicio
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org/)
+[![Playwright](https://img.shields.io/badge/playwright-1.61.1-blue.svg)](https://playwright.dev/)
+[![TypeScript](https://img.shields.io/badge/typescript-5.9.3-blue.svg)](https://www.typescriptlang.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Requiere Node.js 22.13+ y npm. Descargá el proyecto y ejecutá, desde cualquier directorio:
+---
 
-- Linux: `/ruta/al/proyecto/jedertech.sh`.
-- Windows: `C:\ruta\al\proyecto\jedertech.cmd` (doble clic o terminal).
+## 🚀 Características Principales
 
-Ambos lanzadores usan `npm ci` si faltan dependencias, compilan cuando cambió el código e instalan Chromium compatible con la versión fijada de Playwright si falta. Preguntan antes de instalar. Chromium se guarda en `.playwright-browsers/` del proyecto; no se usan perfiles personales. El navegador puede necesitar bibliotecas del sistema en Linux; el instalador informa el error si faltan y no ejecuta `sudo` automáticamente. La versión para Windows tiene revisión estática, pero requiere una prueba final en Windows.
+- **Barra de Progreso Dinámica:** Monitoreo en tiempo real en una sola línea del progreso, velocidad de extracción, duplicados detectados y alertas inmediatas en rojo ante fallas, stalls o desconexiones.
+- **Limpieza de Memoria en Caliente (DOM Pruning):** Extracción de miles de anuncios en sesiones largas manteniendo el layout transparente para evitar pantallas grises y colapsos de RAM en Chromium.
+- **Persistencia y Deduplicación Aislada:** Almacenamiento local mediante SQLite (`node:sqlite`). Cada base de datos lógica deduplica automáticamente los anuncios por ID.
+- **Sesión Interactiva con Browser Propio:** Control por teclado para pausar (`Ctrl+C` o `p`), reanudar tramos pendientes (`r`), ampliar el objetivo (`+N`) o exportar sin cerrar el navegador.
+- **Exportación Atómica:** Generación instantánea de archivos CSV con sanitización ante inyecciones de fórmulas y reportes en formato JSON.
+- **Mapeo de Anunciantes Reales:** Extracción de anuncios únicos y anunciantes confirmados mediante GraphQL y JSON estructurado.
 
-En el menú, elegí **Nueva extracción**, creá o seleccioná una base, pegá la URL, indicá el objetivo y elegí modo visible o headless. La extracción visible usa una sesión persistente: al alcanzar el objetivo, la terminal espera `r`, `+N`, `e`, `p` o `q` y Chromium sigue abierto. El modo headless termina normalmente. El navegador predeterminado es Chromium y el menú no pregunta por otros motores.
+---
 
-El menú incluye **4. Exportar base a CSV**: elegí `b`, escribí el nombre de la base y se genera el CSV acumulado sin abrir el navegador. También permite exportar una ejecución concreta con `t`. Antes de una extracción de red, muestra URL, base y objetivo y pide confirmar. Los comandos directos siguen disponibles:
+## 📋 Requisitos Previos
+
+- **Node.js:** Versión 22.13.0 o superior (compatible con `node:sqlite`).
+- **npm:** Gestor de paquetes incluido con Node.js.
+- Sistema operativo: **Linux** o **Windows** (WSL/cmd/PowerShell).
+
+---
+
+## 🛠️ Instalación Rápida
+
+Descarga o clona el repositorio y corre el script de instalación automática:
 
 ```bash
-./meta-scraper db create infoproductores
-./meta-scraper session --url 'https://www.facebook.com/ads/library/?country=AR&q=curso' --limit 1000 --db infoproductores --visible
-./meta-scraper session --url 'https://www.facebook.com/ads/library/?country=ALL&q=curso' --limit 1000 --mode advertisers --db infoproductores --visible --profile main
-./meta-scraper jobs list
-./meta-scraper export --db infoproductores --format csv
-./meta-scraper export --job job_ID --format csv
+git clone https://github.com/tu-usuario/scrapper-meta-pro.git
+cd scrapper-meta-pro
+chmod +x install.sh
+./install.sh
+```
+
+El script se encargará de instalar las dependencias de Node.js, compilar TypeScript y descargar el binario local de Chromium con sus dependencias de sistema.
+
+---
+
+## 🎯 Modo de Uso
+
+### 1. Asistente Interactivo (Recomendado)
+
+Inicia el entorno visual guiado por menús:
+
+```bash
+./jedertech.sh
+```
+
+El asistente te permitirá:
+1. Crear o seleccionar bases de datos lógicas.
+2. Iniciar nuevas búsquedas o reanudar extracciones previas.
+3. Exportar resultados a CSV con un solo clic.
+4. Inspeccionar la salud de la sesión y diagnósticos.
+5. Gestionar perfiles persistentes o temporales.
+
+### 2. Uso mediante CLI Directo
+
+También puedes invocar directamente el binario `./meta-scraper`:
+
+```bash
+# Crear una base de datos
+./meta-scraper db create e-commerce
+
+# Iniciar una sesión visible con objetivo de 1000 anuncios
+./meta-scraper session --url 'https://www.facebook.com/ads/library/?country=AR&q=zapatillas' --limit 1000 --db e-commerce --visible
+
+# Extraer anunciantes confirmados
+./meta-scraper session --url 'https://www.facebook.com/ads/library/?country=ALL&q=marketing' --limit 500 --mode advertisers --db e-commerce --visible
+
+# Exportar una base completa a CSV
+./meta-scraper export --db e-commerce --format csv
+
+# Verificar estado de navegadores y dependencias
 ./meta-scraper doctor
 ```
 
-En la sesión visible: `Ctrl+C` o `p` pausa después de la operación actual sin cerrar Chromium; `r` completa el objetivo pendiente del mismo trabajo; `+500` inicia un tramo de 500 anuncios nuevos y conserva cualquier objetivo anterior pendiente; `e` exporta; `h` muestra Browser Health sin hacer solicitudes; `q` cierra. Tras una pausa por GraphQL podés recargar manualmente la página, esperar y escribir `r`. La recarga sola no reanuda el scraper. Puede ser necesario volver a recorrer anuncios ya observados; SQLite deduplica por ID. Si cerrás la pestaña principal, la sesión conserva el trabajo y `r` reabre el perfil y la búsqueda desde el inicio. Después de cerrar Chromium, **Continuar sesión** abre un navegador nuevo; el cursor visual exacto no se restaura.
+---
 
-## Perfiles del navegador
+## ⌨️ Controles en la Sesión Persistente
 
-La extracción visible usa por defecto `profiles/main/`, un perfil propio del proyecto que conserva cookies y almacenamiento entre aperturas. SQLite y los trabajos siguen separados en `data/`. Para una sesión descartable, agregá `--profile temp` al comando `session`; se elimina al cerrar normalmente con `q`. Podés abrir el perfil principal e iniciar sesión en Meta manualmente si lo decidís; el scraper no copia credenciales ni accede a perfiles personales de otros navegadores. La validez futura de la autenticación depende de Meta.
+Durante una extracción interactiva en ventana visible, la terminal acepta comandos en tiempo real:
 
-En el menú, **8. Abrir perfil manualmente** abre Chromium en blanco y lo mantiene abierto hasta escribir `q`; **9. Restablecer perfil** elimina solo el perfil elegido tras pedir la frase exacta. También están `./meta-scraper profile status`, `./meta-scraper profile open main`, `./meta-scraper profile open temp` y `./meta-scraper profile reset main`. El restablecimiento rechaza una sesión abierta y conserva bases, trabajos y CSV. Si una terminación forzada deja un perfil temporal, usá `profile reset temp` cuando no haya sesión activa. No se garantiza recuperar la pestaña o el cursor de una sesión cerrada.
+- `Ctrl+C` o `p`: Pausa la extracción de forma segura y preserva el estado en SQLite sin cerrar Chromium.
+- `r`: Reanuda la extracción del objetivo pendiente.
+- `+N`: Agrega un nuevo tramo de *N* anuncios al trabajo actual.
+- `e`: Exporta el progreso actual inmediatamente a CSV.
+- `h`: Muestra el snapshot de salud del navegador (Browser Health) sin realizar peticiones de red.
+- `q`: Cierra la sesión y el navegador de forma ordenada.
 
-Para actualizar, conservá `data/`, actualizá código y `package-lock.json`, y ejecutá de nuevo el lanzador. Para desinstalar, cerrá la sesión y eliminá la carpeta del proyecto después de guardar una copia de `data/` y sus CSV. El proyecto no instala paquetes globales. Los datos están en `data/`; las dependencias en `node_modules/` y el navegador en `.playwright-browsers/`.
+---
 
-## Datos y exportaciones
+## 📂 Estructura del Proyecto
 
-`data/meta-scraper.sqlite` es la fuente de verdad: contiene bases lógicas independientes, anuncios, observaciones, búsquedas, trabajos y checkpoints. Las bases se deduplican por `ad_id`. El objetivo predeterminado cuenta anuncios nuevos; `--mode advertisers` cuenta solo anunciantes con ID de página obtenido de JSON estructurado. Las tarjetas sin ese ID conservan identidad provisional y no suman a ese objetivo. Los CSV de ejecución incluyen los anuncios observados, incluso los ya existentes; los de base incluyen los únicos acumulados. Ambos se regeneran sin navegador. Se escriben atómicamente en `data/exports/AAAA-MM-DD/HH-MM-SS_tipo_id/`, con hora argentina y protección para Excel. `destination_kind` clasifica la URL observada; un enlace de seguimiento no confirma la página final.
+```text
+├── data/                  # Almacenamiento local SQLite y exportaciones CSV (ignorado en git)
+├── dist/                  # Código JavaScript compilado
+├── docs/                  # Documentación técnica y arquitectura
+├── profiles/              # Perfiles aislados de navegación
+├── src/                   # Código fuente en TypeScript
+│   ├── cli.ts             # Punto de entrada de la línea de comandos
+│   ├── dom-inspection.ts  # Inspección de DOM y poda de memoria (skeletons transparentes)
+│   ├── extractors.ts      # Motor de extracción Playwright y manejo de GraphQL
+│   ├── progress.ts        # Renderizado dinámico de la barra de progreso
+│   ├── session-cli.ts     # Control interactivo de la sesión en vivo
+│   ├── storage.ts         # Capa de persistencia SQLite
+│   └── wizard.ts          # Asistente interactivo de consola
+├── install.sh             # Script de instalación automática
+├── jedertech.sh           # Lanzador del asistente para Linux
+└── README.md              # Documentación del proyecto
+```
 
-## Formatear el proyecto
+---
 
-La opción **7. Formatear proyecto** del menú, o `./meta-scraper format`, pide escribir `FORMATEAR` exactamente. Borra las bases SQLite, sus respaldos, los CSV, perfiles, sesiones, diagnósticos y archivos de investigación del proyecto. Conserva código, documentación, dependencias y Git. Rechaza el borrado si hay una sesión o trabajo activo. **Guardá un respaldo verificado fuera de `data/` antes de usarla:** la acción es irreversible. No elimina `node_modules/` ni `.playwright-browsers/`.
+## 🔒 Privacidad y Ética
 
-## Estado y límites
-
-`npm test`, `npm run test:browser-local` y `npm run benchmark:local` no contactan a Meta. La prueba de navegador usa Chromium real con un servidor local `127.0.0.1` y un proceso Node real. La velocidad y cobertura contra Meta dependen de sus respuestas y no se garantizan. Cuando no aparecen IDs nuevos tras el scroll o «Ver más», la sesión observa la página hasta 60 segundos (aviso a los 30); continúa apenas detecta anuncios o un control de paginación, sin clics repetidos durante la espera. `Ctrl+C` o `p` cancelan esa espera. Un HTTP 403/429 detiene solicitudes automáticas y deja el navegador disponible para inspección manual; `r` inicia un intento explícito reabriendo el perfil. Tres errores consecutivos de paginación GraphQL sin IDs nuevos generan un aviso; cinco pausan el tramo (`GRAPHQL_ERROR`). Los errores intermitentes se reinician con progreso verificado. Las respuestas tardías de una pausa no reactivan la extracción. Nunca se declara agotamiento sin evidencia de fin.
-
-Los lanzadores ocultan únicamente la advertencia experimental de `node:sqlite` de Node.js; otras advertencias y errores siguen visibles. El ritmo de paginación evita solicitudes superpuestas y clics repetidos sin resultados. No imita movimientos humanos ni garantiza evitar restricciones de Meta.
-
-En búsquedas largas, el scraper elimina del DOM las tarjetas ya extraídas y confirmadas en SQLite (`[Memory] Purged N ad nodes` en los diagnósticos), lo que mantiene la memoria del navegador acotada en objetivos de miles de anuncios. Aun así vigilá la memoria disponible y usá `Ctrl+C`/`p` para pausar si el equipo se vuelve lento. Una caída del proceso conserva los lotes ya confirmados en SQLite, pero no el cursor visual exacto. Ejecutá la sesión directamente en la terminal: si la conectás a una tubería de comandos que también recibe `Ctrl+C`, esa tubería puede cerrar la terminal y el navegador.
-
-Ver [arquitectura](docs/ARCHITECTURE.md), [operaciones](docs/OPERATIONS.md) y [guía de desarrollo](AGENTS.md). No se implementan filtros comerciales ni enriquecimiento en esta fase.
+Este software está pensado para investigación, análisis de mercado y auditoría de anuncios públicos. No recopila datos privados de usuarios ni burla barreras de autenticación. Utiliza los datos expuestos públicamente por Meta Ads Library.

@@ -152,7 +152,7 @@ export async function startPersistentSession(storage:Storage,dataDir:string,base
           }
         },
         recordDiagnostic);
-      if(process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
+      if(process.stdout.isTTY) process.stdout.write('\x1b[2K\r');
       const elapsedSeconds = (performance.now() - started) / 1000;
       const speed = elapsedSeconds > 0 ? (Math.max(0, result.job.unique_ads - startingAds) * 60) / elapsedSeconds : 0;
       console.log(formatSummary(result.job, elapsedSeconds, speed));

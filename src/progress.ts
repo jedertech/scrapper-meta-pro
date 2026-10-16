@@ -14,7 +14,7 @@ export function progressWriter(): (line:string,force?:boolean)=>void {
     const now=Date.now();
     if(!force && now-last<1000) return;
     last=now;
-    if(process.stdout.isTTY) process.stdout.write(`\r\x1b[2K${line}${force?'\n':''}`);
+    if(process.stdout.isTTY) process.stdout.write(`\x1b[2K\r${line}${force?'\n':''}`);
     else process.stdout.write(`${line}\n`);
   };
 }
@@ -48,6 +48,12 @@ export function progressLineGreen(job: Job, lastAction = 'Extrayendo...'): strin
   const barWidth = 15;
   const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth));
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+
+  const isError = ['STALLED', 'FAILED', 'ACCESS_DENIED', 'RATE_LIMITED', 'GRAPHQL_ERROR', 'INTERRUPTED'].includes(job.status);
+  if (isError) {
+    const errorReason = job.reason || lastAction || job.status;
+    return `\x1b[31m[ Base: ${job.db_name} ] ⚠️ Error/Stall: ${job.status} (${errorReason}) | Extraídos: ${achieved}/${target} [${bar}] ${pct}% | Repetidos: ${job.duplicate_ads}\x1b[0m`;
+  }
 
   // [ Base: nombre ] ⏳ Extraídos: X/Y [████░░] 40% | Repetidos: Z | Última acción: Scroll...
   return `\x1b[32m[ Base: ${job.db_name} ] ⏳ Extraídos: ${achieved}/${target} [${bar}] ${pct}% | Repetidos: ${job.duplicate_ads} | Última acción: ${lastAction}\x1b[0m`;

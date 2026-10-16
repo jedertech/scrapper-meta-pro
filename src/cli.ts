@@ -207,7 +207,7 @@ async function main(): Promise<void> {
           writeProgress(progressLineGreen(updated, currentLastAction));
         }
       },logDiagnostic);
-      if(process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
+      if(process.stdout.isTTY) process.stdout.write('\x1b[2K\r');
       const elapsedSeconds = (performance.now() - runStarted) / 1000;
       const speed = elapsedSeconds > 0 ? (Math.max(0, result.unique_ads - startingAds) * 60) / elapsedSeconds : 0;
       console.log(formatSummary(result, elapsedSeconds, speed));
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
           writeProgress(progressLineGreen(updated, currentLastAction));
         }
       });
-      if(process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
+      if(process.stdout.isTTY) process.stdout.write('\x1b[2K\r');
       const elapsedSeconds = (performance.now() - resumeStarted) / 1000;
       const speed = elapsedSeconds > 0 ? (Math.max(0, result.unique_ads - startingAds) * 60) / elapsedSeconds : 0;
       console.log(formatSummary(result, elapsedSeconds, speed));

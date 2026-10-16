@@ -98,6 +98,9 @@ export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: strin
         const rect = (card as HTMLElement).getBoundingClientRect();
         const skeleton = document.createElement('div');
         skeleton.setAttribute('data-msr-pruned', id);
+        skeleton.style.display = 'block';
+        skeleton.style.background = 'transparent';
+        skeleton.style.width = '100%';
         skeleton.style.height = `${Math.max(1, Math.round(rect.height))}px`;
         skeleton.style.minHeight = `${Math.max(1, Math.round(rect.height))}px`;
         skeleton.style.overflow = 'hidden';
