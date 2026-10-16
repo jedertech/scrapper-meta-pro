@@ -13,20 +13,21 @@ import { runSessionSlice } from './session-runner.js';
 import { exportJob, exportBase } from './exporter.js';
 import { AccessError, type Mode } from './types.js';
 import { startPersistentSession } from './session-cli.js';
-import { progressLine, progressWriter } from './progress.js';
+import { progressLine, progressLineGreen, formatSummary, progressWriter } from './progress.js';
 import { formatProject } from './project-format.js';
 import { openProfile, profileStatus, resetProfile, type ProfileKind } from './browser-profiles.js';
 
 const args = process.argv.slice(2);
+const isDebug = args.includes('--debug');
 function opt(name: string, fallback?: string): string | undefined { const i=args.indexOf(`--${name}`); return i<0 ? fallback : args[i+1]; }
 function number(value: string | undefined, label: string): number { const n=Number(value); if (!Number.isSafeInteger(n)||n<1) throw new Error(`${label} debe ser entero positivo`); return n; }
 function help(): void { console.log(`meta-scraper — CLI local para Meta Ads Library
 
 Comandos:
-  db create NOMBRE | db list | db use NOMBRE | db stats NOMBRE
-  run --url URL --limit N [--db NOMBRE] [--mode ads|advertisers] [--browser chromium|firefox|webkit] [--visible]
-  session --url URL --limit N --db NOMBRE --visible [--mode ads|advertisers] [--profile main|temp]
-  resume --job ID [--target-total N] [--visible]
+  db create NOMBRE | db delete NOMBRE | db list | db use NOMBRE | db stats NOMBRE
+  run --url URL --limit N [--db NOMBRE] [--mode ads|advertisers] [--browser chromium|firefox|webkit] [--visible] [--debug]
+  session --url URL --limit N --db NOMBRE --visible [--mode ads|advertisers] [--profile main|temp] [--debug]
+  resume --job ID [--target-total N] [--visible] [--debug]
   jobs list | jobs show ID
   export --job ID --format csv | export --db NOMBRE --format csv
   doctor
@@ -36,7 +37,7 @@ Comandos:
   benchmark --url URL --limit N [opciones de run]
   format (borra bases, exportaciones y diagnósticos del proyecto tras confirmar)
 
-Opciones globales: --data-dir RUTA (predeterminado ./data), --help`); }
+Opciones globales: --data-dir RUTA (predeterminado ./data), --debug, --help`); }
 function extractor(browser: string, target: number, options: ExtractorOptions = {}, maxScrolls?: number) {
   if (!['chromium','firefox','webkit'].includes(browser)) throw new Error('Navegador inválido');
   const selected={chromium,firefox,webkit}[browser as 'chromium'|'firefox'|'webkit'];
@@ -45,7 +46,17 @@ function extractor(browser: string, target: number, options: ExtractorOptions = 
 }
 const visible = args.includes('--visible');
 const writeProgress=progressWriter();
+let currentLastAction = 'Iniciando...';
 function logDiagnostic(event: DiagnosticEvent): void {
+  // En modo normal (sin --debug ni --verbose), suprimimos los miles de logs y actualizamos la última acción
+  if (event.phase==='dom' && event.detail?.startsWith('pagination_clicked')) currentLastAction = 'Paginación (clic en Ver más)';
+  else if (event.phase==='wait' && event.detail?.startsWith('scroll')) currentLastAction = 'Scroll en feed';
+  else if (event.phase==='navigation') currentLastAction = 'Navegando página';
+  else if (event.phase==='summary' && event.detail?.startsWith('[Storage]')) currentLastAction = 'Persistiendo en SQLite';
+  else if (event.phase==='dom' && event.detail?.startsWith('[Memory]')) currentLastAction = 'Limpieza de memoria DOM';
+
+  if (!isDebug && !args.includes('--verbose')) return;
+
   if (args.includes('--verbose')) { process.stderr.write(`[meta-diagnostic] ${JSON.stringify(event)}\n`); return; }
   const now = new Intl.DateTimeFormat('es-AR',{timeZone:'America/Argentina/Cordoba',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date());
   if (event.phase==='navigation' && event.detail==='final_response')
@@ -153,6 +164,10 @@ async function main(): Promise<void> {
     const [command,sub] = args;
     if (command==='db') {
       if (sub==='create') { storage.createBase(args[2]!); console.log(`Base creada: ${args[2]}`); }
+      else if (sub==='delete') {
+        const deleted = storage.deleteBase(args[2]!);
+        console.log(deleted ? `Base eliminada: ${args[2]}` : `No se encontró la base: ${args[2]}`);
+      }
       else if (sub==='list') console.log(JSON.stringify(storage.listBases(),null,2));
       else if (sub==='use') { storage.useBase(args[2]!); console.log(`Base predeterminada: ${args[2]}`); }
       else if (sub==='stats') console.log(JSON.stringify(storage.stats(args[2]!),null,2));
@@ -168,7 +183,7 @@ async function main(): Promise<void> {
       if(!base) throw new Error('Indicá --db NOMBRE');
       const profile=opt('profile','main');
       if(profile!=='main'&&profile!=='temp') throw new Error('Perfil inválido; elegí main o temp');
-      await startPersistentSession(storage,dataDir,base,url,limit,logDiagnostic,{profile,mode});
+      await startPersistentSession(storage,dataDir,base,url,limit,logDiagnostic,{profile,mode,debug:isDebug});
     } else if (command==='run' || command==='benchmark') {
       const url=validateSearchUrl(opt('url') ?? ''); const limit=number(opt('limit'), 'limit');
       const mode=opt('mode','ads') as Mode; if (!['ads','advertisers'].includes(mode)) throw new Error('Modo inválido');
@@ -181,15 +196,23 @@ async function main(): Promise<void> {
       const selectedExtractor=extractor(browser,limit,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds:filterForThisBase});
       const startingAds=job.unique_ads;
       const startingObserved=job.observed;
-      console.log(`Trabajo: ${job.id} | navegador: ${browser} (${visible?'visible':'headless'})`);
+      if (isDebug) console.log(`Trabajo: ${job.id} | navegador: ${browser} (${visible?'visible':'headless'})`);
       const controller=new AbortController(); process.once('SIGINT',()=>controller.abort()); process.once('SIGTERM',()=>controller.abort());
+      const runStarted = performance.now();
       const result=await runJob(storage,job.id,selectedExtractor,controller.signal,(updated,seconds)=>{
-        const stats=storage.stats(base) as {ads:number;advertisers:number};
-        writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
+        if (isDebug) {
+          const stats=storage.stats(base) as {ads:number;advertisers:number};
+          writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
+        } else {
+          writeProgress(progressLineGreen(updated, currentLastAction));
+        }
       },logDiagnostic);
-      if(process.stdout.isTTY) process.stdout.write('\n');
+      if(process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
+      const elapsedSeconds = (performance.now() - runStarted) / 1000;
+      const speed = elapsedSeconds > 0 ? (Math.max(0, result.unique_ads - startingAds) * 60) / elapsedSeconds : 0;
+      console.log(formatSummary(result, elapsedSeconds, speed));
       const path=exportJob(storage,job.id,join(dataDir,'exports'));
-      console.log(JSON.stringify({id:result.id,status:result.status,observed:result.observed,unique_ads:result.unique_ads,new_advertisers:result.new_advertisers,reason:result.reason,export:path},null,2));
+      console.log(`CSV generado: ${path}`);
       process.exitCode=exitCodeForStatus(result.status);
     } else if (command==='resume') {
       const id=opt('job'); if (!id) throw new Error('--job requerido');
@@ -200,13 +223,21 @@ async function main(): Promise<void> {
       const startingAds=job.unique_ads;
       const startingObserved=job.observed;
       const controller=new AbortController(); process.once('SIGINT',()=>controller.abort()); process.once('SIGTERM',()=>controller.abort());
+      const resumeStarted = performance.now();
       const result=await runJob(storage,id,extractor(job.browser,job.target_total,{headless:!visible,onDiagnostic:logDiagnostic,filterNewAds:filterForResume}),controller.signal,(updated,seconds)=>{
-        const stats=storage.stats(job.db_name) as {ads:number;advertisers:number};
-        writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
+        if (isDebug) {
+          const stats=storage.stats(job.db_name) as {ads:number;advertisers:number};
+          writeProgress(progressLine(updated,stats.ads,stats.advertisers,seconds,startingAds,startingObserved));
+        } else {
+          writeProgress(progressLineGreen(updated, currentLastAction));
+        }
       });
-      if(process.stdout.isTTY) process.stdout.write('\n');
+      if(process.stdout.isTTY) process.stdout.write('\r\x1b[2K');
+      const elapsedSeconds = (performance.now() - resumeStarted) / 1000;
+      const speed = elapsedSeconds > 0 ? (Math.max(0, result.unique_ads - startingAds) * 60) / elapsedSeconds : 0;
+      console.log(formatSummary(result, elapsedSeconds, speed));
       const path=exportJob(storage,id,join(dataDir,'exports'));
-      console.log(JSON.stringify({id:result.id,status:result.status,unique_ads:result.unique_ads,new_advertisers:result.new_advertisers,reason:result.reason,export:path},null,2));
+      console.log(`CSV generado: ${path}`);
       process.exitCode=exitCodeForStatus(result.status);
     } else if (command==='jobs') {
       if (sub==='list') console.log(JSON.stringify(storage.jobs(),null,2));

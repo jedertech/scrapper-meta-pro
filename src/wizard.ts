@@ -63,28 +63,20 @@ else {
         resume=candidates[index].id;
       }
     }
-    let mode=persistent?'v':'';
-    while(!mode) {
-      const answer=(await ask('Navegador visible o headless [v/h]: ','v')).toLowerCase();
-      if(answer==='v'||answer==='h') mode=answer;
-      else console.log('Elegí v o h.');
-    }
+    const mode='v';
+    const profile='main';
     const browser='chromium';
     // Visible runs belong to the interactive session, so reaching a target never
     // returns to this menu or releases the browser.
-    const command=extractionCommand(mode==='v',resume);
+    const command=extractionCommand(true,resume);
     const args=command==='session'?['session','--url',url,'--limit',String(target),'--db',base]:
       command==='resume'?['resume','--job',resume!,'--target-total',String(target)]:['run','--url',url,'--limit',String(target),'--db',base,'--browser',browser];
-    if(mode==='v') {
-      args.push('--visible');
-      if(command==='session') {
-        const profile=(await ask('Perfil principal o temporal [main/temp]: ','main')).toLowerCase();
-        if(profile!=='main'&&profile!=='temp') throw new Error('Elegí main o temp');
-        args.push('--profile',profile);
-      }
+    args.push('--visible');
+    if(command==='session') {
+      args.push('--profile',profile);
     }
-    console.log(`Base ${base}; objetivo ${target} anuncios únicos nuevos; navegador ${mode==='v'?'visible':'headless'}.`);
-    if((await ask('Iniciar ahora [s/N]: ','n')).toLowerCase()!=='s') return;
+    console.log(`Base: ${base} | Objetivo: ${target} anuncios únicos nuevos | Navegador: visible | Perfil: main.`);
+    if((await ask('Iniciar ahora [S/n]: ','s')).toLowerCase()==='n') return;
     const code=await runCli(args);
     if(code) console.log(`La ejecución terminó con código ${code}. Revisá su CSV y el historial.`);
   };
@@ -103,8 +95,48 @@ else {
           if(!Number.isInteger(index)||!jobs[index]) {console.log('Selección cancelada.');continue;}
           if((await ask('Reanudar con navegador nuevo [s/N]: ','n')).toLowerCase()==='s') await runCli(['resume','--job',jobs[index].id,'--visible']);
         }
-        else if(choice==='3') {console.table(storage.listBases());const name=await ask('Nombre de base para ver estadísticas (Enter vuelve): ');if(name) console.log(storage.stats(name));}
-        else if(choice==='4') {const scope=(await ask('Exportar base o trabajo [b/t]: ','b')).toLowerCase();if(scope==='b'){const base=await chooseBase(false);console.log(`CSV: ${exportBase(storage,base,join(dataDir,'exports'))}`);}else if(scope==='t'){const id=await ask('ID del trabajo: ');console.log(`CSV: ${exportJob(storage,id,join(dataDir,'exports'))}`);}}
+        else if(choice==='3') {
+          console.log('\n--- Gestión de Bases de Datos ---');
+          const bases=storage.listBases() as Array<{name:string;ads:number;advertisers:number}>;
+          if(bases.length) console.table(bases);
+          else console.log('No hay bases de datos creadas.');
+          console.log('Acciones: [c]rear base | [b]orrar base | [s]tatísticas de base | Enter para volver');
+          const dbAction=(await ask('Acción: ')).toLowerCase();
+          if(dbAction==='c') {
+            const name=safeName(await ask('Nombre de la nueva base: '));
+            storage.createBase(name);
+            console.log(`Base '${name}' creada exitosamente.`);
+          } else if(dbAction==='b') {
+            const name=safeName(await ask('Nombre de la base a BORRAR: '));
+            const confirm=await ask(`¿Estás seguro de que deseas eliminar permanentemente '${name}' y todos sus datos? Escribí BORRAR: `);
+            if(confirm==='BORRAR') {
+              if(storage.deleteBase(name)) {
+                console.log(`Base '${name}' eliminada correctamente.`);
+              } else {
+                console.log(`No se encontró la base '${name}'.`);
+              }
+            } else {
+              console.log('Borrado cancelado.');
+            }
+          } else if(dbAction==='s'||dbAction==='ver') {
+            const name=await ask('Nombre de base para ver estadísticas (Enter vuelve): ');
+            if(name) console.log(storage.stats(name));
+          }
+        }
+        else if(choice==='4') {
+          const scope=(await ask('Exportar base o trabajo [b/t]: ','b')).toLowerCase();
+          if(scope==='b'){
+            const base=await chooseBase(false);
+            const path=exportBase(storage,base,join(dataDir,'exports'));
+            console.log(`\n✔ Base exportada exitosamente.`);
+            console.log(`Archivo CSV generado: ${path}`);
+          } else if(scope==='t'){
+            const id=await ask('ID del trabajo: ');
+            const path=exportJob(storage,id,join(dataDir,'exports'));
+            console.log(`\n✔ Trabajo exportado exitosamente.`);
+            console.log(`Archivo CSV generado: ${path}`);
+          }
+        }
         else if(choice==='5') {console.table(storage.jobs().map(j=>({id:j.id,base:j.db_name,status:j.status,nuevos:j.unique_ads,duplicados:j.duplicate_ads,fecha:j.started_at})));const name=await ask('Base para estadísticas (Enter vuelve): ');if(name) console.log(storage.stats(name));}
         else if(choice==='6') {
           console.log(`Perfiles: ${JSON.stringify(profileStatus())}. Salud de la sesión activa: comando h dentro de esa sesión.`);

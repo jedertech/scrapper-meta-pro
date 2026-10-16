@@ -1,20 +1,27 @@
-# TAREA ACTUAL: Fase 4.2 - Dedup Local y DOM Traversal Independiente de Media
+# TAREA ACTUAL: Fase 6 - Empaquetado Open Source, UX Final y Limpieza
 
-**Objetivos:** 
-1. Aislar las bases de datos SQLite para que los duplicados se validen localmente, no globalmente.
-2. Hacer que el extractor no dependa de imágenes/videos para identificar el contenedor de un anuncio, ya que en extracciones masivas (>3000 ads) Meta no carga los assets (lazy-loading throttling) y el scraper deja basura en el DOM.
+**Objetivo:** Dejar el CLI perfecto (barra dinámica real), arreglar el layout gris del DOM, solucionar crashes, formatear y dejar el repositorio 0km.
 
-**Instrucciones de Corrección:**
+**Instrucciones Paso a Paso:**
 
-1. **Aislamiento de Bases de Datos (`src/storage.ts`):**
-   - El método `filterNewAds` está validando los IDs contra toda la tabla `ads` históricamente.
-   - Modifica la tabla, el esquema o las sentencias SQL para que el `WHERE` respete el archivo de base de datos actual o la sesión activa. Una `--db` nueva debe tener cero duplicados aunque el anuncio exista en otras bases.
+1. **UX de la Barra Dinámica (`src/cli.ts` / `src/progress.ts`):**
+   - Corrige la impresión de la barra. Usa `process.stdout.write('\x1b[2K\r' + texto)` para borrar la línea completa antes de escribir, evitando que se impriman múltiples líneas hacia abajo.
+   - Si el estado es un error, desconexión o STALL, la barra/texto debe imprimirse en **ROJO** (usando códigos ANSI `\x1b[31m`) y mostrar el motivo. En ejecución normal, usa verde.
 
-2. **Extracción sin dependencia de Media (`src/extractors.ts` y `src/dom-inspection.ts`):**
-   - Elimina la condición `if (card.querySelector('img, video'))` en los bucles `while` de búsqueda de contenedor.
-   - **Nueva Heurística:** El contenedor correcto del anuncio es aquel que tiene 1 único ID de biblioteca (tolerando spans duplicados del mismo ID) PERO que representa la tarjeta estructural completa. 
-   - Diseña un método basado en clases de Meta (ej. buscar el primer padre con estilo de caja, o seguir subiendo hasta justo antes de tocar el contenedor de 2 IDs). Debe capturar la tarjeta completa para que el DOM Pruning borre el nodo visual completo sin depender de que los assets gráficos hayan cargado.
+2. **Fix de Pantalla Gris (`src/dom-inspection.ts`):**
+   - En `pruneVisibleCards`, al crear el `skeleton`, asegúrate de que mantenga el layout para que la grilla de Meta no colapse (pantalla gris). Añade: `skeleton.style.display = 'block'; skeleton.style.background = 'transparent'; skeleton.style.width = '100%';`.
 
-3. **Pruebas (Offline y Live):**
-   - Corre `npm run build && npm test`.
-   - Ejecuta una prueba viva de 50 anuncios en una base limpia. Monitorea que 1) No haya dedup global y 2) El DOM Pruning elimine visualmente las cajas de los anuncios aunque no hayan renderizado fotos.
+3. **Fix del Crash Ctrl+C (`src/wizard.ts`):**
+   - Maneja el cierre del `readline`. Si el usuario presiona `Ctrl+C` (señal `SIGINT`), ataja el evento, imprime `\nCerrando programa de forma segura...` y ejecuta `process.exit(0)` en lugar de arrojar `ERR_USE_AFTER_CLOSE`.
+
+4. **Limpieza 0km y Gitignore:**
+   - Borra todos los archivos `.sqlite`, `.sqlite-shm`, `.sqlite-wal`, `.csv` y `.log` dentro de `data/` y sus subcarpetas. Deja solo archivos `.gitkeep` para preservar la estructura.
+   - Revisa `.gitignore` para ignorar estas extensiones en `data/` y `.env`.
+   - Ejecuta el formateador (Prettier/ESLint vía `npm run format` o similar) para alinear todo el código.
+
+5. **Documentación e Instalador:**
+   - Crea `install.sh` (bash) que ejecute: `npm install`, `npx playwright install --with-deps chromium`, y `npm run build`. Añade un mensaje de éxito.
+   - Escribe un `README.md` profesional para GitHub: Qué hace, cómo instalarlo (`chmod +x install.sh && ./install.sh`) y cómo usarlo (`./jedertech.sh`).
+
+6. **Self-Destruct:**
+   - Como ÚLTIMO paso en bash, elimina `docs/AGENTS.md`, `docs/current_task.md` y `docs/QA_REPORT.md`. El proyecto debe quedar limpio solo con código y documentación real.

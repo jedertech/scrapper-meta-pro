@@ -91,6 +91,27 @@ export class Storage {
   integrity(): string { return String((this.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check); }
   backup(path: string): void { this.db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`); chmodSync(path,0o600); }
   createBase(name: string): void { this.db.prepare('INSERT INTO prospecting_databases(name) VALUES (?)').run(safeName(name)); }
+  deleteBase(name: string): boolean {
+    const id = this.baseId(name);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM job_leases WHERE job_id IN (SELECT id FROM jobs WHERE database_id=?)').run(id);
+      this.db.prepare('DELETE FROM exports WHERE job_id IN (SELECT id FROM jobs WHERE database_id=?)').run(id);
+      this.db.prepare('DELETE FROM record_errors WHERE job_id IN (SELECT id FROM jobs WHERE database_id=?)').run(id);
+      this.db.prepare('DELETE FROM observations WHERE job_id IN (SELECT id FROM jobs WHERE database_id=?)').run(id);
+      this.db.prepare('DELETE FROM checkpoints WHERE job_id IN (SELECT id FROM jobs WHERE database_id=?)').run(id);
+      this.db.prepare('DELETE FROM database_ads WHERE database_id=?').run(id);
+      this.db.prepare('DELETE FROM database_advertisers WHERE database_id=?').run(id);
+      this.db.prepare('DELETE FROM jobs WHERE database_id=?').run(id);
+      this.db.prepare("DELETE FROM settings WHERE key='default_db' AND value=?").run(name);
+      const res = this.db.prepare('DELETE FROM prospecting_databases WHERE id=?').run(id);
+      this.db.exec('COMMIT');
+      return res.changes > 0;
+    } catch(err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
   listBases(): object[] { return this.db.prepare('SELECT d.name, COUNT(DISTINCT da.ad_id) AS ads, COUNT(DISTINCT dv.advertiser_id) AS advertisers FROM prospecting_databases d LEFT JOIN database_ads da ON da.database_id=d.id LEFT JOIN database_advertisers dv ON dv.database_id=d.id GROUP BY d.id ORDER BY d.name').all(); }
   useBase(name: string): void { this.baseId(name); this.db.prepare("INSERT INTO settings(key,value) VALUES ('default_db',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(name); }
   defaultBase(): string | null { return (this.db.prepare("SELECT value FROM settings WHERE key='default_db'").get() as { value: string } | undefined)?.value ?? null; }
