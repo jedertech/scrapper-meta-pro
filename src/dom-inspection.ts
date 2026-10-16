@@ -51,8 +51,21 @@ export async function pruneVisibleCards(page: Pick<Page, 'evaluate'>, ids: strin
       const id = label.textContent?.match(labelRegex)?.[1];
       if (!id || !known.has(id)) continue;
       let card: Element | null = label;
-      while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))
+      // Fase 4.1: Meta inyecta spans duplicados con el mismo ID en algunos
+      // anuncios (Lead Gen / Ebooks). Contar spans crudos rompe la subida
+      // hacia el contenedor: el primer nivel con 2 spans parecia ser la
+      // tarjeta y se cortaba. Se recolectan los IDs en un Set y solo se
+      // detiene cuando hay más de un ID ÚNICO, tolerando el mismo ID
+      // repetido. Nunca se asciende al BODY.
+      while (card && card.parentElement && card.parentElement !== document.body) {
+        const ids = new Set<string>();
+        for (const el of card.parentElement.querySelectorAll('span')) {
+          const m = el.textContent?.match(labelRegex);
+          if (m) ids.add(m[1]!);
+        }
+        if (ids.size > 1) break;
         card = card.parentElement;
+      }
       if (!card) { failed.push(id); continue; }
       try {
         const rect = (card as HTMLElement).getBoundingClientRect();
@@ -81,29 +94,50 @@ export async function inspectLoadedPage(page: Pick<Page, 'evaluate'>): Promise<L
       const id = label.textContent?.match(labelRegex)?.[1];
       if (!id) continue;
       let card: Element | null = label;
-      while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))
+      // Fase 4.1: Se asciende por los padres hasta encontrar un contenedor
+      // con más de un ID ÚNICO (Set), lo que marca el límite de la tarjeta.
+      // Se tolera que el mismo ID esté inyectado dos veces: lo que importa
+      // es la cantidad de IDs distintos, no de spans. Nunca se llega al BODY.
+      while (card && card.parentElement && card.parentElement !== document.body) {
+        const ids = new Set<string>();
+        for (const el of card.parentElement.querySelectorAll('span')) {
+          const m = el.textContent?.match(labelRegex);
+          if (m) ids.add(m[1]!);
+        }
+        if (ids.size > 1) break;
         card = card.parentElement;
+      }
       if (!card) continue;
       if (card.closest('[data-msr-pruned]')) continue;
-      const ids = [...card.querySelectorAll('span')].filter(element =>
-        labelRegex.test(element.textContent?.trim() ?? ''));
-      if (ids.length !== 1) continue;
-      cards.push({id,text:(card as HTMLElement).innerText ?? '',
-        description:card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null,
-        links:[...card.querySelectorAll('a[href]')].map(a=>({text:(a as HTMLElement).innerText ?? '',href:(a as HTMLAnchorElement).href}))});
+      const ids = new Set<string>();
+      for (const el of card.querySelectorAll('span')) {
+        const m = el.textContent?.match(labelRegex);
+        if (m) ids.add(m[1]!);
+      }
+      // Fase 4.1: uniqueIds.size !== 1 en lugar de ids.length !== 1.
+      if (ids.size !== 1) continue;
+      cards.push({
+        id, text: (card as HTMLElement).innerText ?? '',
+        description: card.querySelector('div[style*="white-space: pre-wrap"]')?.textContent?.trim() ?? null,
+        links: [...card.querySelectorAll('a[href]')].map(a => ({ text: (a as HTMLElement).innerText ?? '', href: (a as HTMLAnchorElement).href }))
+      });
     }
-    return {url:location.href,title:document.title,cards,
-      accessCheckVisible:/captcha|security check|verifica tu identidad|verify your identity|temporarily blocked/i.test(text.slice(0,5000))};
+    return {
+      url: location.href, title: document.title, cards,
+      accessCheckVisible: /captcha|security check|verifica tu identidad|verify your identity|temporarily blocked/i.test(text.slice(0, 5000))
+    };
   }, LABEL_PATTERN);
   const uniqueIds = [...new Set(snapshot.cards.map(card => card.id))];
   const seen = new Set<string>();
-  const ads = snapshot.cards.map(parseVisibleCard).filter((ad): ad is Record<string,unknown> => {
+  const ads = snapshot.cards.map(parseVisibleCard).filter((ad): ad is Record<string, unknown> => {
     if (!ad) return false;
     const id = String(ad.id);
     if (seen.has(id)) return false;
     seen.add(id);
     return true;
   });
-  return {url:snapshot.url,title:snapshot.title,visibleCards:snapshot.cards.length,uniqueIds,ads,
-    accessCheckVisible:snapshot.accessCheckVisible};
+  return {
+    url: snapshot.url, title: snapshot.title, visibleCards: snapshot.cards.length, uniqueIds, ads,
+    accessCheckVisible: snapshot.accessCheckVisible
+  };
 }

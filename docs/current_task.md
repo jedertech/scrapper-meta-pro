@@ -1,18 +1,22 @@
-# TAREA ACTUAL: Fase 3 - Estabilidad en Segundo Plano (Visible) y Deduplicación del DOM
+# TAREA ACTUAL: Fase 4.1 - Fix de Cero Anuncios (DOM Traversal & Duplicated Spans)
 
-**Objetivo:** El scraper corre en modo visible en un escritorio secundario, pero arroja duplicados por los esqueletos del DOM Pruning. NO usaremos playwright-extra.
+**Objetivo:** El scraper arroja "0 anuncios detectados" y el DOM no se limpia porque el bucle de extracción descarta los anuncios si detecta múltiples `span` o si el anuncio no tiene un link directo a `facebook.com`. Meta inyecta spans duplicados ocultos en anuncios de Lead Gen o Ebooks, lo que rompe el contador actual.
 
-**Instrucciones de Corrección (LÍNEA ROJA: PROHIBIDO TOCAR LÓGICA DE MEMORIA O SQLITE):**
+**Instrucciones de Corrección (LÍNEA ROJA: PROHIBIDO TOCAR LÓGICA DE MEMORIA, PACING O SQLITE):**
 
-1. **Deduplicación de Nodos (Corrección Exacta del Bucle While):**
-   - El extractor principal vuelve a leer los esqueletos porque el bucle `while` escala al contenedor padre y evade la regla `closest`.
-   - Solución A: Cambia los selectores base en `src/extractors.ts` y `src/dom-inspection.ts` para que ignoren hijos de esqueletos: usa `document.querySelectorAll('span:not([data-msr-pruned] *)')`.
-   - Solución B: En el bucle de extracción principal, inmediatamente después de que el while defina `card`, agrega esta validación estricta para matarlo si tocó un esqueleto:
-     `if (card.hasAttribute('data-msr-pruned') || card.closest('[data-msr-pruned]') || card.querySelector('[data-msr-pruned]')) continue;`
-2. **Anti-Throttling (Para usar la PC):**
-   - En `src/browser-compat.ts` (o donde se inicie el contexto), inyecta un script (`addInitScript`) que sobrescriba `document.hidden = false` y `document.visibilityState = 'visible'`.
-   - Asegúrate de pasar a Chromium los args: `--disable-background-timer-throttling`, `--disable-renderer-backgrounding`, `--disable-backgrounding-occluded-windows`.
-3. **Pruebas y Documentación:**
-   - Actualiza los tests offline para verificar que los nodos con `data-msr-pruned` son ignorados.
-   - Escribe el resumen técnico de la Fase 2.5 y de esta Fase 3 en `docs/phases_log.md`.
-   - Detente y avísame cuando los tests pasen para que YO lance la prueba E2E manualmente. TIENES PROHIBIDO crear archivos temporales o descargar el HTML de Meta.
+1. **Fix del Bucle de Extracción (Tolerancia a Spans Duplicados):**
+   - Archivos a modificar: `src/extractors.ts` (líneas ~540) y `src/dom-inspection.ts` (en `inspectLoadedPage` y `pruneVisibleCards`).
+   - Reemplaza el bucle actual (`while (card && (!card.querySelector('a[href*="facebook.com/"]') || card.querySelectorAll('span').length < 2))`) por un algoritmo robusto.
+   - **Lógica Obligatoria:** 
+     1. Escala por los padres (`card.parentElement`) asegurando no llegar nunca al `BODY`.
+     2. En lugar de contar la cantidad cruda de `spans`, extrae los IDs con `labelRegex` y mételos en un `Set`. Cuenta la cantidad de IDs ÚNICOS (`uniqueIds.size`).
+     3. Si la tarjeta actual tiene exactamente 1 ID único y contiene contenido visual (`img` o `video`), ese es el contenedor correcto del anuncio.
+     4. Elimina la condición estricta de `ids.length !== 1` al final, cámbiala por `uniqueIds.size !== 1` para tolerar que el mismo ID esté inyectado dos veces en el HTML.
+
+2. **Fix de Ceguera del Extractor:**
+   - En `src/extractors.ts`, asegúrate de que la validación de los esqueletos sea únicamente: `if (card.closest('[data-msr-pruned]')) continue;`.
+   - ELIMINA cualquier uso de `card.querySelector('[data-msr-pruned]')` para evitar que rechace la grilla entera.
+
+3. **Pruebas (Offline y Live):**
+   - Ejecuta `npm run build && npm test` para validar la lógica.
+   - Realiza una extracción E2E real buscando extraer 100 anuncios de forma limpia. El DOM DEBE irse vaciando (DOM Pruning) y no deben registrarse duplicados en SQLite.
